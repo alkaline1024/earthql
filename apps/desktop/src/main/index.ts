@@ -2,6 +2,7 @@ import { app, BrowserWindow, Menu, shell } from 'electron';
 import path from 'node:path';
 import { registerIpc } from './ipc';
 import { SessionManager } from './sessions';
+import { createUpdateCheck } from './updates';
 
 app.setName('EarthQL');
 
@@ -49,6 +50,10 @@ function createWindow(): void {
 
 function buildMenu(): void {
   const send = (cmd: string) => () => mainWindow?.webContents.send('menu:command', cmd);
+  const checkForUpdates = createUpdateCheck(async () => {
+    quitting = true;
+    await closeSessionsForQuit();
+  }, () => { quitting = false; });
   const template: Electron.MenuItemConstructorOptions[] = [
     { role: 'appMenu' },
     {
@@ -84,7 +89,10 @@ function buildMenu(): void {
       ],
     },
     { role: 'windowMenu' },
-    { role: 'help', submenu: [{ label: 'Send Feedback…', click: send('send-feedback') }] },
+    { role: 'help', submenu: [
+      { label: 'Check for Updates…', enabled: !!checkForUpdates, click: checkForUpdates },
+      { label: 'Send Feedback…', click: send('send-feedback') },
+    ] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -102,12 +110,16 @@ app.whenReady().then(() => {
 });
 
 let quitting = false;
+function closeSessionsForQuit() {
+  // Close database sessions (Databricks sessions, pooled connections) but never hang the quit.
+  return Promise.race([sessions.closeAll().catch(() => undefined), new Promise<void>((resolve) => setTimeout(resolve, 3000))]);
+}
+
 app.on('before-quit', (e) => {
   if (quitting) return;
   quitting = true;
   e.preventDefault();
-  // Close database sessions (Databricks sessions, pooled connections) but never hang the quit.
-  void Promise.race([sessions.closeAll(), new Promise((r) => setTimeout(r, 3000))]).finally(() => app.quit());
+  void closeSessionsForQuit().then(() => app.quit());
 });
 
 // Quit cleanly (closing database sessions) when the process is asked to stop from outside.

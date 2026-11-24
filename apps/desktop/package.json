@@ -10,8 +10,8 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "dist:mac": "electron-vite build && electron-builder --mac --arm64",
-    "dist:mac:universal": "electron-vite build && electron-builder --mac --universal"
+    "dist:mac": "electron-vite build && electron-builder --mac --arm64 --publish never",
+    "dist:mac:universal": "electron-vite build && electron-builder --mac --universal --publish never"
   },
   "dependencies": {
     "@databricks/sql": "^1.12.0",
@@ -21,6 +21,7 @@
     "@earthql/driver-mysql": "0.1.0",
     "@earthql/driver-postgres": "0.1.0",
     "@napi-rs/keyring": "^1.1.0",
+    "electron-updater": "^6.8.11",
     "mssql": "^12.0.0",
     "mysql2": "^3.11.0",
     "pg": "^8.13.0",

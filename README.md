@@ -3,6 +3,10 @@
 macOS desktop database client for **PostgreSQL, MySQL, Databricks and Microsoft SQL Server**.
 Electron + React + TypeScript. Version 0.1 (first release scope).
 
+## Install and update
+
+Download the macOS installer from [GitHub Releases](https://github.com/alkaline1024/earthql/releases) and drag EarthQL to **Applications**. In a signed release, use **Help → Check for Updates…** to install a new version. See the [release guide](RELEASING.md) for preparing and publishing a release.
+
 ## Run
 
 ```bash

@@ -1,5 +1,9 @@
 appId: com.earthql.app
 productName: EarthQL
+publish:
+  provider: github
+  owner: alkaline1024
+  repo: earthql
 directories:
   output: release
   buildResources: build
@@ -15,7 +19,7 @@ mac:
   target:
     - target: dmg
     - target: zip
-  # Code signing / notarization: set CSC_LINK + APPLE_ID env vars in CI. Unsigned builds open via right-click → Open.
+  # The release workflow requires Developer ID signing and verifies the notarization ticket.
   hardenedRuntime: true
   gatekeeperAssess: false
 dmg:

@@ -38,7 +38,7 @@ export default defineConfig(({ mode }) => {
       build: {
         externalizeDeps: { exclude: workspace },
         rollupOptions: {
-          external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native'],
+          external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native', 'electron-updater'],
         },
       },
     },
