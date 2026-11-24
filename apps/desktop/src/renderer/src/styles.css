@@ -1258,6 +1258,25 @@ table.list td.mono {
   margin: 0;
   color: var(--text);
 }
+.welcome .welcome-wordmark {
+  display: inline-flex;
+  align-items: center;
+  padding: 14px 24px;
+  border-radius: 14px;
+  background: #082f20;
+  color: #fbf8ef;
+  font-size: 54px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -0.045em;
+}
+.welcome-wordmark img {
+  display: block;
+  width: 1.05em;
+  height: 1.05em;
+  margin-inline: -0.105em -0.065em;
+  transform: translateY(0.025em);
+}
 
 .kbd {
   font-family: var(--font);

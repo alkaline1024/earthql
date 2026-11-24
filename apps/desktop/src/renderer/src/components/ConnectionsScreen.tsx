@@ -155,7 +155,11 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
         )}
         {!isNew && !selected && (
           <div className="welcome" style={{ height: '100%' }}>
-            <h2>Welcome to EarthQL</h2>
+            <h2 className="welcome-wordmark" aria-label="EarthQL">
+              <span aria-hidden="true">Earth</span>
+              <img src="./earthql-q.png" alt="" width={192} height={192} />
+              <span aria-hidden="true">L</span>
+            </h2>
             <p>Connect to PostgreSQL, MySQL, Databricks or Microsoft SQL Server.</p>
             <button className="btn primary" onClick={startNew}>
               Add a connection

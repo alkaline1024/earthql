@@ -1,4 +1,4 @@
-# EarthQL
+<h1><img src="apps/desktop/src/renderer/public/earthql.png" width="40" height="40" alt=""> EarthQL</h1>
 
 macOS desktop database client for **PostgreSQL, MySQL, Databricks and Microsoft SQL Server**.
 Electron + React + TypeScript. Version 0.1 (first release scope).

@@ -89,6 +89,9 @@ function buildMenu(): void {
 }
 
 app.whenReady().then(() => {
+  if (!app.isPackaged) {
+    app.dock?.setIcon(path.join(app.getAppPath(), 'src', 'renderer', 'public', 'earthql.png'));
+  }
   registerIpc(sessions);
   buildMenu();
   createWindow();
