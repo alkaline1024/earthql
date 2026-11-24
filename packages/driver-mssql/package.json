@@ -1,0 +1,15 @@
+{
+  "name": "@earthql/driver-mssql",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@earthql/core": "0.1.0",
+    "mssql": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/mssql": "^9.1.0"
+  }
+}

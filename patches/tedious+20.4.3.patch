@@ -1,0 +1,60 @@
+diff --git a/node_modules/tedious/lib/value-parser.js b/node_modules/tedious/lib/value-parser.js
+index 9cfae8c..41d7b66 100644
+--- a/node_modules/tedious/lib/value-parser.js
++++ b/node_modules/tedious/lib/value-parser.js
+@@ -453,37 +453,31 @@ function readUniqueIdentifier(buf, offset, options) {
+   return new _helpers.Result(options.lowerCaseGuids ? (0, _guidParser.bufferToLowerCaseGuid)(data) : (0, _guidParser.bufferToUpperCaseGuid)(data), offset);
+ }
+ function readNumeric(buf, offset, dataLength, _precision, scale) {
++  // EarthQL patch: return DECIMAL/NUMERIC/MONEY-as-numeric values as exact decimal strings instead of
++  // lossy JS numbers (a DECIMAL(38,s) has up to 38 significant digits).
+   let sign;
+   ({
+     offset,
+     value: sign
+   } = (0, _helpers.readUInt8)(buf, offset));
+-  sign = sign === 1 ? 1 : -1;
+-  let value;
+-  if (dataLength === 5) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUInt32LE)(buf, offset));
+-  } else if (dataLength === 9) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric64LE)(buf, offset));
+-  } else if (dataLength === 13) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric96LE)(buf, offset));
+-  } else if (dataLength === 17) {
+-    ({
+-      offset,
+-      value
+-    } = (0, _helpers.readUNumeric128LE)(buf, offset));
+-  } else {
++  const byteLength = dataLength - 1;
++  if (byteLength !== 4 && byteLength !== 8 && byteLength !== 12 && byteLength !== 16) {
+     throw new Error(`Unsupported numeric dataLength ${dataLength}`);
+   }
+-  return new _helpers.Result(value * sign / Math.pow(10, scale), offset);
++  if (buf.length < offset + byteLength) {
++    throw new _helpers.NotEnoughDataError(offset + byteLength);
++  }
++  let magnitude = 0n;
++  for (let i = byteLength - 1; i >= 0; i--) {
++    magnitude = magnitude << 8n | BigInt(buf[offset + i]);
++  }
++  offset += byteLength;
++  let text = magnitude.toString();
++  if (scale > 0) {
++    text = text.padStart(scale + 1, '0');
++    text = text.slice(0, -scale) + '.' + text.slice(-scale);
++  }
++  return new _helpers.Result((sign === 1 || magnitude === 0n ? '' : '-') + text, offset);
+ }
+ function readVariant(buf, offset, options, dataLength) {
+   let baseType;

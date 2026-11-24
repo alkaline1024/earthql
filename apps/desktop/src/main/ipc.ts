@@ -1,0 +1,126 @@
+import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo, type SecretField, type Secrets } from '@earthql/core';
+import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
+import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
+import { SessionManager } from './sessions';
+import { clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
+
+function isErrorInfo(e: any): e is ErrorInfo {
+  return e && typeof e === 'object' && typeof e.category === 'string' && typeof e.message === 'string' && !(e instanceof Error);
+}
+
+export function registerIpc(sessions: SessionManager): void {
+  const handle = <A extends unknown[], T>(channel: string, profileArg: number | null, fn: (...args: A) => Promise<T> | T) => {
+    ipcMain.handle(channel, async (_ev, ...args: unknown[]): Promise<IpcResult<T>> => {
+      try {
+        return { ok: true, value: await fn(...(args as A)) };
+      } catch (e) {
+        const profileId = profileArg !== null ? (args[profileArg] as string | undefined) : undefined;
+        const error = isErrorInfo(e) ? e : isEarthQLError(e) ? e.toInfo() : sessions.errorFor(profileId, e);
+        return { ok: false, error };
+      }
+    });
+  };
+
+  // --- profiles -------------------------------------------------------------
+  const summary = (p: ConnectionProfile): ProfileSummary => ({ profile: p, storedSecrets: storedFields(p.id) });
+
+  handle('profiles:list', null, () => loadProfiles().map(summary));
+
+  handle('profiles:save', null, (profile: ConnectionProfile, secrets: Secrets) => {
+    const list = loadProfiles();
+    const now = Date.now();
+    const idx = list.findIndex((p) => p.id === profile.id);
+    const saved: ConnectionProfile = { ...profile, createdAt: idx >= 0 ? list[idx].createdAt : now, updatedAt: now };
+    if (idx >= 0) list[idx] = saved;
+    else list.push(saved);
+    // Secrets go to the Keychain, never into profiles.json.
+    const wanted = secretFieldsFor(saved as any);
+    for (const [field, value] of Object.entries(secrets ?? {}) as [SecretField, string][]) {
+      if (value !== undefined && wanted.includes(field)) setSecret(saved.id, field, value);
+    }
+    // Remove secrets that no longer apply (e.g. switching Databricks from token to M2M).
+    for (const f of ['password', 'clientSecret', 'accessToken'] as SecretField[]) if (!wanted.includes(f)) deleteSecret(saved.id, f);
+    saveProfiles(list);
+    return summary(saved);
+  });
+
+  handle('profiles:remove', null, async (id: string) => {
+    await sessions.close(id);
+    saveProfiles(loadProfiles().filter((p) => p.id !== id));
+    deleteAllSecrets(id);
+    deleteProfileData(id);
+  });
+
+  handle('profiles:test', null, async (profile: ConnectionProfile, secrets: Secrets) => {
+    const stored = getSecrets(profile.id);
+    const merged: Secrets = { ...stored };
+    for (const [k, v] of Object.entries(secrets ?? {}) as [SecretField, string][]) if (v) merged[k] = v;
+    const conn = sessions.createConnection(profile, merged);
+    try {
+      return await conn.test();
+    } catch (e) {
+      return { ok: false, steps: [], error: conn.classifyError(e) };
+    } finally {
+      await conn.close().catch(() => undefined);
+    }
+  });
+
+  // --- connections / metadata ----------------------------------------------
+  handle('connection:open', 0, (profileId: string) => sessions.open(profileId));
+  handle('connection:close', 0, (profileId: string) => sessions.close(profileId));
+  handle('meta:children', 0, (profileId: string, node) => sessions.get(profileId).conn.listChildren(node as any));
+  handle('meta:structure', 0, (profileId: string, object, refresh?: boolean) => sessions.structure(profileId, object as any, !!refresh));
+  handle('meta:privileges', 0, (profileId: string, object) => sessions.get(profileId).conn.getPrivileges(object as any));
+  handle('meta:completion', 0, (profileId: string, ctx) => sessions.get(profileId).conn.completionSchema(ctx as any));
+  handle('data:browse', 0, (profileId: string, req) => sessions.browse(profileId, req as any));
+
+  // --- queries ----------------------------------------------------------------
+  handle('query:run', 0, (profileId: string, runId: string, sql: string, ctx, limit: number) => sessions.run(profileId, runId, sql, ctx as any, limit));
+  handle('query:cancel', null, (runId: string) => sessions.cancel(runId));
+  handle('query:more', null, (cursorId: string, maxRows: number) => sessions.more(cursorId, maxRows));
+  handle('query:closeCursor', null, (cursorId: string) => sessions.closeCursor(cursorId));
+
+  // --- writes -----------------------------------------------------------------
+  handle('write:previewInsert', 0, (profileId: string, spec) => sessions.previewInsert(profileId, spec as any));
+  handle('write:insert', 0, (profileId: string, spec) => sessions.insert(profileId, spec as any));
+  handle('write:previewCreate', 0, (profileId: string, spec) => sessions.previewCreate(profileId, spec as any));
+  handle('write:create', 0, (profileId: string, spec) => sessions.create(profileId, spec as any));
+
+  // --- history / saved --------------------------------------------------------
+  handle('history:list', 0, (profileId: string) => loadHistory(profileId));
+  handle('history:clear', 0, (profileId: string) => clearHistory(profileId));
+  handle('saved:list', 0, (profileId: string) => loadSaved(profileId));
+  handle('saved:save', 0, (profileId: string, q: SavedQuery) => {
+    const list = loadSaved(profileId);
+    const now = Date.now();
+    const id = q.id || randomUUID();
+    const idx = list.findIndex((x) => x.id === id);
+    const item: SavedQuery = { ...q, id, createdAt: idx >= 0 ? list[idx].createdAt : now, updatedAt: now };
+    if (idx >= 0) list[idx] = item;
+    else list.unshift(item);
+    writeSaved(profileId, list);
+    return item;
+  });
+  handle('saved:remove', 0, (profileId: string, id: string) => writeSaved(profileId, loadSaved(profileId).filter((x) => x.id !== id)));
+
+  // --- export -----------------------------------------------------------------
+  handle('export:run', null, async (exportId: string, scope, opts) => {
+    const o = opts as { suggestedName: string; nullText: string; bom: boolean };
+    // Automated end-to-end tests only: write to a fixed directory instead of showing the save panel.
+    const testDir = process.env.EARTHQL_E2E_EXPORT_DIR;
+    if (testDir) return sessions.exportCsv(exportId, scope as any, o, path.join(testDir, o.suggestedName));
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Export CSV',
+      defaultPath: path.join(os.homedir(), 'Downloads', o.suggestedName.replace(/[/\\:]/g, '_')),
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    });
+    if (res.canceled || !res.filePath) return { status: 'dialog-cancelled' as const };
+    return sessions.exportCsv(exportId, scope as any, o, res.filePath);
+  });
+  handle('export:cancel', null, (exportId: string) => sessions.cancelExport(exportId));
+}

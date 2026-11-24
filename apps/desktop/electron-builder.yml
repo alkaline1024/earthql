@@ -1,0 +1,22 @@
+appId: com.earthql.app
+productName: EarthQL
+directories:
+  output: release
+  buildResources: build
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - "**/*.node"
+mac:
+  category: public.app-category.developer-tools
+  minimumSystemVersion: "12.0"
+  target:
+    - target: dmg
+    - target: zip
+  # Code signing / notarization: set CSC_LINK + APPLE_ID env vars in CI. Unsigned builds open via right-click → Open.
+  hardenedRuntime: true
+  gatekeeperAssess: false
+dmg:
+  title: EarthQL
+electronVersion: "39.8.10"

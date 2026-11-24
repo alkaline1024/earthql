@@ -1,0 +1,15 @@
+name: earthql-test
+services:
+  postgres:
+    image: postgres:17
+    environment: { POSTGRES_PASSWORD: "Eq-test-pw1", POSTGRES_DB: earthql }
+    ports: ["55432:5432"]
+  mysql:
+    image: mysql:8.4
+    environment: { MYSQL_ROOT_PASSWORD: "Eq-test-pw1", MYSQL_DATABASE: earthql }
+    ports: ["53306:3306"]
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    environment: { ACCEPT_EULA: "Y", MSSQL_SA_PASSWORD: "Eq-test-pw1!" }
+    ports: ["51433:1433"]

@@ -1,0 +1,24 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023"],
+    "strict": true,
+    "noUncheckedIndexedAccess": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@earthql/core": ["packages/core/src/index.ts"],
+      "@earthql/driver-postgres": ["packages/driver-postgres/src/index.ts"],
+      "@earthql/driver-mysql": ["packages/driver-mysql/src/index.ts"],
+      "@earthql/driver-databricks": ["packages/driver-databricks/src/index.ts"],
+      "@earthql/driver-mssql": ["packages/driver-mssql/src/index.ts"]
+    }
+  }
+}
