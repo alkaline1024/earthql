@@ -28,6 +28,7 @@ import type {
   TreeNode,
   WriteResult,
 } from '@earthql/core';
+import type { FeedbackDraft, FeedbackSettings } from './feedback';
 
 export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: ErrorInfo };
 
@@ -145,5 +146,11 @@ export interface EarthQLApi {
     run(exportId: string, scope: ExportScope, opts: ExportOptions): Promise<ExportResult>;
     cancel(exportId: string): Promise<void>;
     onProgress(cb: (p: ExportProgress) => void): () => void;
+  };
+  feedback: {
+    settings(): Promise<FeedbackSettings>;
+    saveSettings(url: string, key: string): Promise<FeedbackSettings>;
+    capture(): Promise<string>;
+    submit(draft: FeedbackDraft): Promise<{ id: string }>;
   };
 }

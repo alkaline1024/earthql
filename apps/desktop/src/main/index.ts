@@ -84,6 +84,7 @@ function buildMenu(): void {
       ],
     },
     { role: 'windowMenu' },
+    { role: 'help', submenu: [{ label: 'Send Feedback…', click: send('send-feedback') }] },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }

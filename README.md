@@ -69,6 +69,10 @@ regenerate the patch and re-run the integration tests.
 - Test Connection opens a session (waits for a stopped warehouse to start) and runs `SELECT 1`.
 - The SQL editor shows *waiting for warehouse* / *queued* / *running* from the operation state.
 
+## Feedback
+
+Open **Help → Send Feedback…** to report a bug or suggest an improvement. You can review, crop, or black out a screenshot before choosing to attach it. See [Feedback setup](feedback/README.md) to set up a Google Sheet and private Drive folder, and to ship a build with the inbox already configured.
+
 ## Known limitations (v0.1)
 
 - Databricks rows come back keyed by column name, so duplicate column names in one result show one value (a notice says so).

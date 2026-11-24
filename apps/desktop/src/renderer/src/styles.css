@@ -1258,6 +1258,30 @@ table.list td.mono {
   margin: 0;
   color: var(--text);
 }
+
+.feedback-form textarea { height: auto; resize: vertical; }
+.feedback-image {
+  position: relative;
+  align-self: flex-start;
+  max-width: 100%;
+  outline: 1px solid var(--line-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.feedback-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 300px;
+  pointer-events: none;
+}
+.feedback-image.editing { cursor: crosshair; touch-action: none; }
+.feedback-selection {
+  position: absolute;
+  border: 2px solid #fff;
+  background: rgba(35, 110, 205, 0.22);
+  pointer-events: none;
+}
+.feedback-selection.cover { background: #000; }
 .welcome .welcome-wordmark {
   display: inline-flex;
   align-items: center;

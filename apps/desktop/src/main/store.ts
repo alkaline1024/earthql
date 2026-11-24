@@ -29,6 +29,16 @@ function writeJson(file: string, data: unknown): void {
 const safeId = (id: string) => id.replace(/[^A-Za-z0-9_-]/g, '_');
 
 const profilesFile = () => path.join(dir(), 'profiles.json');
+const feedbackFile = () => path.join(dir(), 'feedback.json');
+
+export function loadFeedbackEndpoint(): string {
+  const config = readJson<{ endpoint?: string } | null>(feedbackFile(), null);
+  return typeof config?.endpoint === 'string' ? config.endpoint : '';
+}
+
+export function writeFeedbackEndpoint(endpoint: string): void {
+  writeJson(feedbackFile(), { endpoint });
+}
 
 export function loadProfiles(): ConnectionProfile[] {
   return readJson<{ profiles: ConnectionProfile[] }>(profilesFile(), { profiles: [] }).profiles;

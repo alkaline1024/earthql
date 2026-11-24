@@ -1,6 +1,6 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { describePath } from '@earthql/core';
-import { onMenuCommand } from '../api';
+import { api, onMenuCommand } from '../api';
 import { profileOf, useApp, type Tab } from '../store';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { CreateTableTab } from './CreateTableTab';
@@ -8,6 +8,7 @@ import { Sidebar } from './Sidebar';
 import { SqlTab } from './SqlTab';
 import { TableTab } from './TableTab';
 import { ErrorBoundary } from './ErrorBoundary';
+import { FeedbackDialog } from './FeedbackDialog';
 
 function tabTitle(t: Tab): { title: string; sub: string; icon: string } {
   if (t.kind === 'table') return { title: t.object.name, sub: describePath({ ...t.object, name: '' }).replace(/\.$/, ''), icon: t.objectKind === 'view' ? '◇' : '▦' };
@@ -19,6 +20,8 @@ export function App() {
   const { screen, tabs, activeTabId, activateTab, closeTab, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
   const profiles = useApp((s) => s.profiles);
   const [newRequested, setNewRequested] = useState(0);
+  const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
+  const feedbackOpen = useRef(false);
 
   useEffect(() => {
     void loadProfiles();
@@ -27,6 +30,11 @@ export function App() {
   useEffect(
     () =>
       onMenuCommand((cmd) => {
+        if (cmd === 'send-feedback' && !feedbackOpen.current) {
+          feedbackOpen.current = true;
+          // Capture the original view before covering it with the feedback form.
+          void api.feedback.capture().catch(() => null).then((screenshot) => setFeedback({ screenshot }));
+        }
         const s = useApp.getState();
         if (cmd === 'new-connection') {
           s.setScreen('connections');
@@ -131,6 +139,7 @@ export function App() {
           </div>
         ))}
       </div>
+      {feedback && <FeedbackDialog screenshot={feedback.screenshot} onClose={() => { feedbackOpen.current = false; setFeedback(null); }} />}
       <span hidden>{profiles.length}</span>
     </div>
   );

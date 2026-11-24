@@ -1,6 +1,7 @@
-import { defineConfig } from 'electron-vite';
+import { defineConfig, loadEnv } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
+import { feedbackEndpointUrl } from './src/shared/feedback';
 
 const root = path.resolve(__dirname, '../..');
 const pkg = (n: string) => path.join(root, `packages/${n}/src/index.ts`);
@@ -25,24 +26,31 @@ const cspPlugin = {
   },
 };
 
-export default defineConfig({
-  main: {
-    resolve: { alias },
-    build: {
-      externalizeDeps: { exclude: workspace },
-      rollupOptions: {
-        external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native'],
+export default defineConfig(({ mode }) => {
+  const value = loadEnv(mode, root, 'EARTHQL_FEEDBACK_').EARTHQL_FEEDBACK_URL?.trim();
+  const endpoint = value ? feedbackEndpointUrl(value) : '';
+  if (endpoint === null) throw new Error('EARTHQL_FEEDBACK_URL must be a deployed Google Apps Script /exec URL.');
+
+  return {
+    main: {
+      define: { __EARTHQL_FEEDBACK_URL__: JSON.stringify(endpoint) },
+      resolve: { alias },
+      build: {
+        externalizeDeps: { exclude: workspace },
+        rollupOptions: {
+          external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native'],
+        },
       },
     },
-  },
-  preload: {
-    resolve: { alias },
-    build: { externalizeDeps: { exclude: workspace } },
-  },
-  renderer: {
-    root: path.resolve(__dirname, 'src/renderer'),
-    resolve: { alias: { '@earthql/core': pkg('core') } },
-    plugins: [react(), cspPlugin],
-    build: { rollupOptions: { input: path.resolve(__dirname, 'src/renderer/index.html') } },
-  },
+    preload: {
+      resolve: { alias },
+      build: { externalizeDeps: { exclude: workspace } },
+    },
+    renderer: {
+      root: path.resolve(__dirname, 'src/renderer'),
+      resolve: { alias: { '@earthql/core': pkg('core') } },
+      plugins: [react(), cspPlugin],
+      build: { rollupOptions: { input: path.resolve(__dirname, 'src/renderer/index.html') } },
+    },
+  };
 });

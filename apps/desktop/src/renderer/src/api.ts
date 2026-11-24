@@ -66,6 +66,12 @@ export const api: EarthQLApi = {
     cancel: (exportId) => call('export:cancel', exportId),
     onProgress: (cb) => bridge.on('export:progress', cb as any),
   },
+  feedback: {
+    settings: () => call('feedback:settings'),
+    saveSettings: (url, key) => call('feedback:saveSettings', url, key),
+    capture: () => call('feedback:capture'),
+    submit: (draft) => call('feedback:submit', draft),
+  },
 };
 
 export function onMenuCommand(cb: (cmd: string) => void): () => void {

@@ -12,7 +12,7 @@
     "build": "npm run build -w @earthql/desktop",
     "dist:mac": "npm run dist:mac -w @earthql/desktop",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck -w @earthql/desktop",
-    "test": "vitest run",
+    "test": "vitest run && node --test feedback/google-apps-script/receiver.test.cjs",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "postinstall": "patch-package"
   },

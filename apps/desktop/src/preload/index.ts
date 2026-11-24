@@ -10,6 +10,7 @@ const INVOKE = new Set([
   'write:previewInsert', 'write:insert', 'write:previewCreate', 'write:create',
   'history:list', 'history:clear', 'saved:list', 'saved:save', 'saved:remove',
   'export:run', 'export:cancel',
+  'feedback:settings', 'feedback:saveSettings', 'feedback:capture', 'feedback:submit',
 ]);
 const EVENTS = new Set(['query:phase', 'export:progress', 'menu:command']);
 

@@ -6,6 +6,7 @@ import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
 import { SessionManager } from './sessions';
+import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
 import { clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
 
 function isErrorInfo(e: any): e is ErrorInfo {
@@ -123,4 +124,13 @@ export function registerIpc(sessions: SessionManager): void {
     return sessions.exportCsv(exportId, scope as any, o, res.filePath);
   });
   handle('export:cancel', null, (exportId: string) => sessions.cancelExport(exportId));
+
+  handle('feedback:settings', null, feedbackSettings);
+  handle('feedback:saveSettings', null, saveFeedbackSettings);
+  handle('feedback:submit', null, submitFeedback);
+  handle('feedback:capture', null, () => {
+    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error('Open an EarthQL window before capturing a screenshot.');
+    return captureFeedbackScreenshot(window.webContents);
+  });
 }
