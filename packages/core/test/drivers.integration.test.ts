@@ -8,10 +8,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   ScriptRun,
   runBrowse,
+  runGridUpdates,
   runWrite,
   type ConnectionProfile,
   type DriverConnection,
   type DriverModule,
+  type GridRowUpdate,
   type Secrets,
 } from '@earthql/core';
 import { postgresDriver } from '@earthql/driver-postgres';
@@ -234,6 +236,38 @@ for (const t of TARGETS) {
       expect(r.columns?.map((c) => c.name)).toEqual(['a', 'a', 'big']);
       expect(r.rows[0].slice(0, 2).map(Number)).toEqual([1, 2]);
       expect(String(r.rows[0][2])).toBe('9007199254740993');
+    });
+
+    it('saves keyed grid edits atomically and rejects stale cells', async () => {
+      const editObject = { ...object, name: `${table}_edit` };
+      const qualified = conn.dialect.qualify(editObject);
+      const row = (id: string, original: string | null, value: string | null): GridRowUpdate => ({
+        key: [{ column: 'tenant_id', value: '1' }, { column: 'id', value: id }],
+        changes: [{ column: 'note', original, value }],
+      });
+      const firstId = '9007199254740992';
+      const secondId = '9007199254740993';
+      const read = async () => (await exec(conn, `SELECT note FROM ${qualified} ORDER BY tenant_id, id`)).rows.flat();
+      await exec(conn, `CREATE TABLE ${qualified} (tenant_id INT NOT NULL, id BIGINT NOT NULL, note ${t.textType} NULL, PRIMARY KEY (tenant_id, id))`);
+      try {
+        await exec(conn, `INSERT INTO ${qualified} VALUES (1, ${firstId}, 'First'), (1, ${secondId}, NULL), (2, ${secondId}, 'Other tenant')`);
+        const structure = await conn.getStructure(editObject);
+        expect(structure.gridUpdate).toBe(true);
+        const text = "O'Brien ☀";
+        expect(await runGridUpdates(conn, structure, [row(secondId, null, text)])).toMatchObject({ status: 'ok', rowsAffected: 1 });
+        expect(await read()).toEqual(['First', text, 'Other tenant']);
+
+        await exec(conn, `UPDATE ${qualified} SET note = 'Changed' WHERE tenant_id = 1 AND id = ${secondId}`);
+        const conflict = await runGridUpdates(conn, structure, [row(firstId, 'First', 'staged'), row(secondId, text, 'stale')]);
+        expect(conflict).toMatchObject({ status: 'error', error: { code: 'GRID_CONFLICT' } });
+        expect(await read()).toEqual(['First', 'Changed', 'Other tenant']);
+
+        expect(await runGridUpdates(conn, structure, [row(firstId, 'First', ''), row(secondId, 'Changed', null)]))
+          .toMatchObject({ status: 'ok', rowsAffected: 2 });
+        expect(await read()).toEqual(['', null, 'Other tenant']);
+      } finally {
+        await exec(conn, `DROP TABLE ${qualified}`);
+      }
     });
 
     it('returns high-precision DECIMAL values exactly from ad-hoc SQL', async () => {

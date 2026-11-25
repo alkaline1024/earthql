@@ -13,6 +13,7 @@ import type {
   ErrorInfo,
   ExecContext,
   Filter,
+  GridRowUpdate,
   InsertSpec,
   ObjectPath,
   ObjectPrivileges,
@@ -130,6 +131,7 @@ export interface EarthQLApi {
   write: {
     previewInsert(profileId: string, spec: InsertSpec): Promise<BuiltStatement>;
     insert(profileId: string, spec: InsertSpec): Promise<WriteResult>;
+    updateCells(profileId: string, object: ObjectPath, rows: GridRowUpdate[]): Promise<WriteResult>;
     previewCreate(profileId: string, spec: CreateTableSpec): Promise<BuiltStatement>;
     create(profileId: string, spec: CreateTableSpec): Promise<WriteResult>;
   };

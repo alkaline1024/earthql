@@ -72,7 +72,7 @@ function buildMenu(): void {
         { label: 'Run', accelerator: 'CmdOrCtrl+Enter', click: send('run') },
         { label: 'Cancel', accelerator: 'CmdOrCtrl+.', click: send('cancel') },
         { type: 'separator' },
-        { label: 'Save Query…', accelerator: 'CmdOrCtrl+S', click: send('save-query') },
+        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save') },
       ],
     },
     {

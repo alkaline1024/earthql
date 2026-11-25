@@ -153,7 +153,7 @@ export function SqlTab({
     return window.earthqlBridge.on('menu:command', (cmd) => {
       if (cmd === 'run') void execute();
       if (cmd === 'cancel') void cancel();
-      if (cmd === 'save-query') saveQuery();
+      if (cmd === 'save') saveQuery();
     });
   }, [active, execute, cancel, saveQuery]);
 

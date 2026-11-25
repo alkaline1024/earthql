@@ -7,3 +7,4 @@ export * from './dialect';
 export * from './driver';
 export * from './runner';
 export * from './util';
+export * from './grid-update';

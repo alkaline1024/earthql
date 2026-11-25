@@ -1,10 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  canEditGridColumn,
+  cellToText,
   describePath,
+  gridPrimaryKey,
+  gridRowId,
+  MAX_GRID_UPDATE_ROWS,
   type BrowseResult,
   type ErrorInfo,
   type Filter,
   type FilterOp,
+  type GridRowUpdate,
   type ObjectKind,
   type ObjectPath,
   type ObjectPrivileges,
@@ -14,7 +20,7 @@ import {
 } from '@earthql/core';
 import { api, errorInfo } from '../api';
 import { noteError, profileOf, useApp } from '../store';
-import { DataGrid } from './DataGrid';
+import { DataGrid, type GridEditing } from './DataGrid';
 import { ContextBar } from './ContextBar';
 import { ErrorView, Spinner, StateView, formatDuration } from './common';
 import { InsertDialog } from './InsertDialog';
@@ -111,6 +117,7 @@ export function TableTab({
           structure={structure}
           insertBlocked={insertBlocked}
           insertUnknown={privileges?.insert === 'unknown'}
+          editBlocked={privileges?.update === 'no' ? 'This account has no UPDATE privilege on this table.' : null}
           active={active}
           onInserted={() => setDataVersion((v) => v + 1)}
         />
@@ -128,6 +135,7 @@ function DataView({
   structure,
   insertBlocked,
   insertUnknown,
+  editBlocked,
   active,
   onInserted,
 }: {
@@ -137,6 +145,7 @@ function DataView({
   structure: TableStructure | null;
   insertBlocked: string | null;
   insertUnknown: boolean;
+  editBlocked: string | null;
   active: boolean;
   onInserted: () => void;
 }) {
@@ -150,13 +159,45 @@ function DataView({
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [showInsert, setShowInsert] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [gridEpoch, setGridEpoch] = useState(0);
+  const draft = useApp((s) => s.gridDrafts[tabId]);
+  const setDraft = useApp((s) => s.setGridDraft);
+  const toast = useApp((s) => s.toast);
   const driver = profileOf(profileId)?.profile.driver;
+  const status = useApp((s) => s.connections[profileId]?.status);
+  const editable = useMemo(() => editBlocked || !structure?.gridUpdate || status === 'lost' ? null : gridPrimaryKey(structure), [editBlocked, structure, status]);
+  const rowKeys = useMemo(() => {
+    if (!result || !editable || structure?.kind !== 'table') return [];
+    const indexes = editable.map((column) => result.columns.findIndex((current) => current.name === column.name));
+    if (indexes.some((index) => index < 0)) return [];
+    return result.rows.map((row) => {
+      const values = indexes.map((index) => row[index]);
+      if (values.some((value) => value == null || typeof value === 'object')) return null;
+      return editable.map(({ name }, index) => ({ column: name, value: cellToText(values[index]) }));
+    });
+  }, [result, editable, structure]);
+  const displayedRows = useMemo(() => result?.rows.map((row, index) => {
+    const key = rowKeys[index];
+    const changes = key && draft?.rows[gridRowId(key)]?.changes;
+    if (!changes) return row;
+    const copy = [...row];
+    for (const change of changes) {
+      const column = result.columns.findIndex(({ name }) => name === change.column);
+      if (column >= 0) copy[column] = change.value;
+    }
+    return copy;
+  }), [result, rowKeys, draft]);
+
+  const rowCount = Object.keys(draft?.rows ?? {}).length;
+  const saving = !!draft?.saving;
+  const unknownOutcome = draft?.error?.category === 'outcome_unknown';
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       setResult(await api.data.browse(profileId, { object, filters, sort, offset, pageSize }));
+      setGridEpoch((previous) => previous + 1);
     } catch (e) {
       const info = errorInfo(e);
       noteError(profileId, info);
@@ -166,6 +207,27 @@ function DataView({
     }
   }, [profileId, object, filters, sort, offset, pageSize]);
 
+  const saveChanges = useCallback(async () => {
+    const current = useApp.getState().gridDrafts[tabId];
+    if (!current || current.saving || current.error?.category === 'outcome_unknown' || loading || !editable || showInsert || showExport) return;
+    setDraft(tabId, { rows: current.rows, saving: true });
+    try {
+      const update = await api.write.updateCells(profileId, object, Object.values(current.rows));
+      if (update.status !== 'ok') {
+        setDraft(tabId, { rows: current.rows, error: update.error });
+        if (update.error) noteError(profileId, update.error);
+        return;
+      }
+      setDraft(tabId, undefined);
+      toast('ok', `Saved ${update.rowsAffected ?? rowCount} ${(update.rowsAffected ?? rowCount) === 1 ? 'row' : 'rows'}.`);
+      await load();
+    } catch (err) {
+      const info = errorInfo(err);
+      noteError(profileId, info);
+      setDraft(tabId, { rows: current.rows, error: info });
+    }
+  }, [editable, load, loading, object, profileId, rowCount, setDraft, showExport, showInsert, tabId, toast]);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -173,10 +235,42 @@ function DataView({
   useEffect(() => {
     if (!active) return;
     const off = window.earthqlBridge.on('menu:command', (cmd) => {
-      if (cmd === 'refresh') void load();
+      if (cmd === 'refresh' && !saving) void load();
+      if (cmd === 'save') void saveChanges();
     });
     return off;
-  }, [active, load]);
+  }, [active, load, saveChanges, saving]);
+
+  const gridColumns = useMemo(() => result?.columns.map(({ name }) => structure?.columns.find((column) => column.name === name)) ?? [], [result, structure]);
+  const gridEditing: GridEditing = {
+    canEdit: (row, col) => !!editable && !!rowKeys[row] && !!gridColumns[col] && canEditGridColumn(gridColumns[col], editable) && !saving && !loading && !unknownOutcome,
+    nullable: (col) => gridColumns[col]?.nullable !== false,
+    changed: (row, col) => {
+      const key = rowKeys[row];
+      return !!key && !!draft?.rows[gridRowId(key)]?.changes.some((change) => change.column === result?.columns[col]?.name);
+    },
+    change: (row, col, value) => {
+      const key = rowKeys[row];
+      const column = gridColumns[col];
+      const current = useApp.getState().gridDrafts[tabId];
+      if (!key || !column || !result || !gridEditing.canEdit(row, col) || current?.saving) return;
+      const id = gridRowId(key);
+      const originalCell = result.rows[row][col];
+      const before = current?.rows[id];
+      if (!before && Object.keys(current?.rows ?? {}).length >= MAX_GRID_UPDATE_ROWS) {
+        toast('info', `Save up to ${MAX_GRID_UPDATE_ROWS} rows at a time.`);
+        return;
+      }
+      const existing = before?.changes.find((cell) => cell.column === column.name);
+      const original = existing ? existing.original : originalCell === null ? null : cellToText(originalCell);
+      const changes = (before?.changes ?? []).filter((cell) => cell.column !== column.name);
+      if (value !== original) changes.push({ column: column.name, original, value });
+      const rows: Record<string, GridRowUpdate> = { ...current?.rows };
+      if (changes.length) rows[id] = { key, changes };
+      else delete rows[id];
+      setDraft(tabId, Object.keys(rows).length ? { rows } : undefined);
+    },
+  };
 
   const columnNames = structure?.columns.map((c) => c.name) ?? result?.columns.map((c) => c.name) ?? [];
 
@@ -214,7 +308,14 @@ function DataView({
           </span>
         )}
         <span className="spacer" />
-        <button className="btn small" onClick={() => void load()} disabled={loading} title="Refresh (⌘R)">
+        {!!rowCount && <span className="pill info">{rowCount} edited {rowCount === 1 ? 'row' : 'rows'}</span>}
+        {!!rowCount && <button className="btn small" disabled={saving} onClick={() => { setDraft(tabId, undefined); setGridEpoch((i) => i + 1); if (unknownOutcome) void load(); }}>Discard</button>}
+        <span title={editBlocked ?? (!editable ? 'Cell editing requires a supported transactional table with a primary key.' : 'Save cell edits (⌘S)')}>
+          <button className="btn small" disabled={!rowCount || saving || loading || !!unknownOutcome || !editable} onClick={() => void saveChanges()}>
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </span>
+        <button className="btn small" onClick={() => void load()} disabled={loading || saving} title="Refresh (⌘R)">
           ↻ Refresh
         </button>
         <button className="btn small" onClick={() => setShowExport(true)} disabled={!result}>
@@ -226,6 +327,7 @@ function DataView({
           </button>
         </span>
       </div>
+      {draft?.error && <ErrorView error={draft.error} compact />}
       {insertBlocked && (
         <div className="banner" style={{ background: 'var(--bg-sunken)', borderBottomColor: 'var(--line)' }}>
           <span className="muted">Insert unavailable:</span> {insertBlocked}
@@ -303,8 +405,10 @@ function DataView({
       ) : (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', opacity: loading ? 0.55 : 1 }}>
           <DataGrid
+            key={gridEpoch}
             columns={result.columns}
-            rows={result.rows}
+            rows={displayedRows ?? result.rows}
+            editing={gridEditing}
             sort={sort}
             onSort={toggleSort}
             rowOffset={result.offset}

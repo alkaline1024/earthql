@@ -51,6 +51,10 @@ export abstract class Dialect {
     return placeholder;
   }
 
+  gridUpdateMatch(column: ColumnInfo, placeholder: string, _compareOriginal: boolean): string {
+    return `${this.quoteIdent(column.name)} = ${this.insertValueExpr(placeholder, column)}`;
+  }
+
   /** Select-list expression for a column when browsing (lets dialects preserve precision). */
   browseSelectExpr(column: Pick<ColumnInfo, 'name' | 'type'>): string {
     return this.quoteIdent(column.name);

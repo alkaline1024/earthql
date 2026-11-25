@@ -6,6 +6,9 @@ import {
   PullBuffer,
   binaryCell,
   classifyNodeError,
+  executeAtomicGridUpdates,
+  isGridText,
+  makeError,
   isEarthQLError,
   kindFromTypeName,
   redactInfo,
@@ -93,6 +96,17 @@ export class MysqlDialect extends Dialect {
   }
   pathParts(p: ObjectPath): string[] {
     return p.database ? [p.database, p.name] : [p.name];
+  }
+  gridUpdateMatch(column: ColumnInfo, placeholder: string, compareOriginal: boolean): string {
+    const name = this.quoteIdent(column.name);
+    if (compareOriginal && isGridText(column)) return `CAST(CONVERT(${name} USING utf8mb4) AS BINARY) = CAST(${placeholder} AS BINARY)`;
+    const type = column.type.trim();
+    if (/^(?:tinyint|smallint|mediumint|int|integer|bigint)\b/i.test(type)) {
+      return `${name} = CAST(${placeholder} AS ${/\bunsigned\b/i.test(type) ? 'UNSIGNED' : 'SIGNED'})`;
+    }
+    const decimal = /^(?:decimal|numeric)\s*\((\d+)\s*,\s*(\d+)\)/i.exec(type);
+    if (decimal) return `${name} = CAST(${placeholder} AS DECIMAL(${decimal[1]},${decimal[2]}))`;
+    return super.gridUpdateMatch(column, placeholder, compareOriginal);
   }
   defaultClause(c: ColumnSpec): string | null {
     if (c.default.kind === 'none') return null;
@@ -356,7 +370,7 @@ class MysqlConnection implements DriverConnection {
 
   async getStructure(object: ObjectPath): Promise<TableStructure> {
     const db = this.db(object);
-    const t = await this.q<{ type: string }>('SELECT TABLE_TYPE AS type FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [
+    const t = await this.q<{ type: string; engine: string | null }>('SELECT TABLE_TYPE AS type, ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [
       db,
       object.name,
     ]);
@@ -375,6 +389,7 @@ class MysqlConnection implements DriverConnection {
       defaultValue: formatMysqlDefault(c.def, c.dtype, c.extra),
       isPrimaryKey: c.ckey === 'PRI',
       isIdentity: /auto_increment/i.test(c.extra ?? ''),
+      isGenerated: /(?:VIRTUAL|STORED) GENERATED/i.test(c.extra ?? ''),
       comment: c.comment || null,
       kind: kindFromTypeName(c.type),
     }));
@@ -458,7 +473,8 @@ class MysqlConnection implements DriverConnection {
         constraintsStatus = { state: 'denied', message: this.classifyError(e).message };
       }
     }
-    return { object, kind, columns, columnsStatus, indexes, indexesStatus, constraints, constraintsStatus };
+    return { object, kind, columns, columnsStatus, indexes, indexesStatus, constraints, constraintsStatus,
+      gridUpdate: t[0]?.type === 'BASE TABLE' && t[0].engine?.toUpperCase() === 'INNODB' };
   }
 
   async getPrivileges(object: ObjectPath): Promise<ObjectPrivileges> {
@@ -466,7 +482,7 @@ class MysqlConnection implements DriverConnection {
       const db = this.db(object);
       const [ro] = await this.q<any>('SELECT @@transaction_read_only AS tro, CURRENT_USER() AS cu');
       if (Number(ro.tro) === 1) {
-        return { select: 'yes', insert: 'no', create: 'no', reason: 'The session is read-only (transaction_read_only = 1).' };
+        return { select: 'yes', insert: 'no', update: 'no', create: 'no', reason: 'The session is read-only (transaction_read_only = 1).' };
       }
       const cu = String(ro.cu);
       const at = cu.lastIndexOf('@');
@@ -483,7 +499,7 @@ class MysqlConnection implements DriverConnection {
       const rolesActive = role && role.r && role.r !== 'NONE';
       const tri = (p: string) => (privs.has(p) ? 'yes' : rolesActive || privs.size === 0 ? 'unknown' : 'no') as 'yes' | 'no' | 'unknown';
       const insert = tri('INSERT');
-      return { select: tri('SELECT'), insert, create: tri('CREATE'), reason: insert === 'no' ? 'This account has no INSERT privilege on the table.' : undefined };
+      return { select: tri('SELECT'), insert, update: tri('UPDATE'), create: tri('CREATE'), reason: insert === 'no' ? 'This account has no INSERT privilege on the table.' : undefined };
     } catch {
       return { select: 'unknown', insert: 'unknown', create: 'unknown' };
     }
@@ -507,6 +523,37 @@ class MysqlConnection implements DriverConnection {
 
   acquire(): Promise<PoolConnection> {
     return new Promise((resolve, reject) => this.pool().getConnection((err, c) => (err ? reject(err) : resolve(c))));
+  }
+
+  async applyGridUpdates(object: ObjectPath, statements: StatementInput[]): Promise<void> {
+    const db = this.db(object);
+    const connection = await this.acquire();
+    const client = connection.promise();
+    let discarded = false;
+    const rollback = async () => {
+      try { await client.rollback(); }
+      catch { discarded = true; connection.destroy(); }
+    };
+    try {
+      // Hold a metadata lock before rechecking that the table still supports rollback.
+      const table = this.dialect.qualify({ ...object, database: db });
+      await executeAtomicGridUpdates(statements, {
+        begin: async () => {
+          await client.beginTransaction();
+          try {
+            await client.query(`SELECT 1 FROM ${table} LIMIT 0`);
+            const [result] = await client.execute<mysql.RowDataPacket[]>('SELECT ENGINE AS engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?', [db, object.name]);
+            if (String(result[0]?.engine).toUpperCase() !== 'INNODB') throw makeError('unsupported', 'Cell editing requires an InnoDB table.');
+          } catch (error) { await rollback(); throw error; }
+        },
+        update: async (statement) => (await client.execute<ResultSetHeader>(statement.sql, statement.params?.map(({ value }) => value)))[0].affectedRows,
+        commit: () => client.commit(),
+        rollback,
+        classifyError: (error) => this.classifyError(error),
+      });
+    } finally {
+      if (!discarded) connection.release();
+    }
   }
 
   async killQuery(threadId: number): Promise<void> {

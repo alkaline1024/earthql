@@ -8,6 +8,7 @@ const INVOKE = new Set([
   'data:browse',
   'query:run', 'query:cancel', 'query:more', 'query:closeCursor',
   'write:previewInsert', 'write:insert', 'write:previewCreate', 'write:create',
+  'write:updateCells',
   'history:list', 'history:clear', 'saved:list', 'saved:save', 'saved:remove',
   'export:run', 'export:cancel',
   'feedback:settings', 'feedback:saveSettings', 'feedback:capture', 'feedback:submit',

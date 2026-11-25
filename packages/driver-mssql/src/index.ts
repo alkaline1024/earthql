@@ -5,6 +5,9 @@ import {
   PullBuffer,
   binaryCell,
   classifyNodeError,
+  executeAtomicGridUpdates,
+  isGridText,
+  makeError,
   formatUtcDate,
   formatUtcDateTime,
   formatUtcTime,
@@ -128,6 +131,14 @@ export class MssqlDialect extends Dialect {
     // (e.g. to a default-precision numeric, overflowing DECIMAL(38,10)), so cast to the column's own type.
     if (/^(n?(var)?char|n?text|xml|sysname)\b/i.test(type) || !this.validateTypeName(type)) return placeholder;
     return `CAST(${placeholder} AS ${type})`;
+  }
+  gridUpdateMatch(column: ColumnInfo, placeholder: string, compareOriginal: boolean): string {
+    if (compareOriginal && isGridText(column)) {
+      // Comparing bytes plus length makes case and trailing spaces significant.
+      const text = `CONVERT(NVARCHAR(MAX), ${this.quoteIdent(column.name)})`;
+      return `CONVERT(VARBINARY(MAX), ${text}) = CONVERT(VARBINARY(MAX), ${placeholder}) AND DATALENGTH(${text}) = DATALENGTH(${placeholder})`;
+    }
+    return super.gridUpdateMatch(column, placeholder, compareOriginal);
   }
   buildInsert(spec: InsertSpec): BuiltStatement {
     const b = super.buildInsert(spec);
@@ -410,7 +421,7 @@ class MssqlConnection implements DriverConnection {
     const id = String(obj[0].id);
     const kind = obj[0].type === 'V' ? 'view' : 'table';
     const cols = await this.q<any>(
-      `SELECT c.column_id, c.name, t.name AS tname, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, c.is_computed,
+      `SELECT c.column_id, c.name, t.name AS tname, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, c.is_computed, c.generated_always_type,
               dc.definition AS def, cc.definition AS computed,
               CASE WHEN EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
                                 WHERE i.is_primary_key = 1 AND ic.object_id = c.object_id AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS pk,
@@ -434,6 +445,7 @@ class MssqlConnection implements DriverConnection {
         defaultValue: c.def ?? (c.computed ? `AS ${c.computed}` : c.is_identity ? 'IDENTITY' : null),
         isPrimaryKey: !!c.pk,
         isIdentity: !!c.is_identity,
+        isGenerated: !!c.is_computed || !!c.generated_always_type || /^(rowversion|timestamp)$/i.test(type),
         comment: c.comment ?? null,
         kind: kindFromTypeName(type),
       };
@@ -473,7 +485,7 @@ class MssqlConnection implements DriverConnection {
          FROM sys.key_constraints kc
          JOIN sys.index_columns ic ON ic.object_id = kc.parent_object_id AND ic.index_id = kc.unique_index_id
          JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
-         WHERE kc.parent_object_id = CAST(@p0 AS INT) ORDER BY kc.type, kc.name, ic.key_ordinal`,
+         WHERE kc.parent_object_id = CAST(@p0 AS INT) AND ic.key_ordinal > 0 ORDER BY kc.type, kc.name, ic.key_ordinal`,
         [id],
         db,
       );
@@ -516,6 +528,7 @@ class MssqlConnection implements DriverConnection {
       indexesStatus,
       constraints,
       constraintsStatus,
+      gridUpdate: obj[0].type === 'U',
     };
   }
 
@@ -523,7 +536,7 @@ class MssqlConnection implements DriverConnection {
     const db = object.database || this.profile.database;
     try {
       const [r] = await this.q<any>(
-        `SELECT HAS_PERMS_BY_NAME(@p0, 'OBJECT', 'SELECT') AS sel, HAS_PERMS_BY_NAME(@p0, 'OBJECT', 'INSERT') AS ins,
+        `SELECT HAS_PERMS_BY_NAME(@p0, 'OBJECT', 'SELECT') AS sel, HAS_PERMS_BY_NAME(@p0, 'OBJECT', 'INSERT') AS ins, HAS_PERMS_BY_NAME(@p0, 'OBJECT', 'UPDATE') AS edit,
                 HAS_PERMS_BY_NAME(DB_NAME(), 'DATABASE', 'CREATE TABLE') AS cdb,
                 HAS_PERMS_BY_NAME(@p1, 'SCHEMA', 'ALTER') AS asch,
                 CAST(DATABASEPROPERTYEX(DB_NAME(), 'Updateability') AS NVARCHAR(20)) AS upd`,
@@ -536,12 +549,31 @@ class MssqlConnection implements DriverConnection {
       return {
         select: tri(r.sel),
         insert,
+        update: ro ? 'no' : tri(r.edit),
         create: ro ? 'no' : r.cdb === 1 && r.asch === 1 ? 'yes' : r.cdb === 0 || r.asch === 0 ? 'no' : 'unknown',
         reason: ro ? 'The database is read-only.' : insert === 'no' ? 'This login has no INSERT permission on the object.' : undefined,
       };
     } catch {
       return { select: 'unknown', insert: 'unknown', create: 'unknown' };
     }
+  }
+
+  async applyGridUpdates(_object: ObjectPath, statements: StatementInput[]): Promise<void> {
+    const transaction = new sql.Transaction(await this.pool());
+    await executeAtomicGridUpdates(statements, {
+      begin: () => transaction.begin(),
+      update: async (statement) => {
+        const params = statement.params ?? [];
+        if (params.length > MAX_PARAMS) throw makeError('config', 'Too many columns were edited in one row.');
+        const request = transaction.request();
+        params.forEach(({ value }, index) => request.input(`p${index}`, sql.NVarChar(sql.MAX), value));
+        const result = await request.query(`${statement.sql}; SELECT @@ROWCOUNT AS earthql_affected_rows;`);
+        return Array.isArray(result.recordsets) ? result.recordsets.at(-1)?.[0]?.earthql_affected_rows : undefined;
+      },
+      commit: () => transaction.commit(),
+      rollback: () => transaction.rollback(),
+      classifyError: (error) => this.classifyError(error),
+    });
   }
 
   async completionSchema(ctx: ExecContext): Promise<CompletionSchema> {

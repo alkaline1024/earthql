@@ -644,6 +644,40 @@ label.check {
   outline: 1.5px solid var(--accent);
   outline-offset: -1.5px;
 }
+.gcell.draft-cell {
+  background: var(--warn-soft);
+  box-shadow: inset 0 -2px var(--warn);
+}
+.gcell:has(.grid-cell-editor) {
+  padding: 0;
+}
+.grid-cell-editor {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-raised);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+.grid-cell-editor textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: none;
+  outline: none;
+  background: transparent;
+  resize: none;
+  white-space: pre;
+  user-select: text;
+}
+.grid-cell-editor button {
+  padding: 0 3px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font);
+  font-size: 9px;
+  cursor: pointer;
+}
 .gcell.rownum {
   justify-content: flex-end;
   color: var(--text-3);

@@ -2,7 +2,7 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
-import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo, type SecretField, type Secrets } from '@earthql/core';
+import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo, type GridRowUpdate, type ObjectPath, type SecretField, type Secrets } from '@earthql/core';
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
 import { SessionManager } from './sessions';
@@ -88,6 +88,7 @@ export function registerIpc(sessions: SessionManager): void {
   // --- writes -----------------------------------------------------------------
   handle('write:previewInsert', 0, (profileId: string, spec) => sessions.previewInsert(profileId, spec as any));
   handle('write:insert', 0, (profileId: string, spec) => sessions.insert(profileId, spec as any));
+  handle('write:updateCells', 0, (profileId: string, object: ObjectPath, rows: GridRowUpdate[]) => sessions.updateCells(profileId, object, rows));
   handle('write:previewCreate', 0, (profileId: string, spec) => sessions.previewCreate(profileId, spec as any));
   handle('write:create', 0, (profileId: string, spec) => sessions.create(profileId, spec as any));
 

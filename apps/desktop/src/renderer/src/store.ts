@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Capabilities, ErrorInfo, ExecContext, ObjectKind, ObjectPath } from '@earthql/core';
+import type { Capabilities, ErrorInfo, ExecContext, GridRowUpdate, ObjectKind, ObjectPath } from '@earthql/core';
 import type { ProfileSummary } from '../../shared/api';
 import { api, errorInfo, uid } from './api';
 
@@ -25,6 +25,12 @@ export interface Toast {
   text: string;
 }
 
+export interface GridDraft {
+  rows: Record<string, GridRowUpdate>;
+  saving?: boolean;
+  error?: ErrorInfo;
+}
+
 interface AppState {
   profiles: ProfileSummary[];
   connections: Record<string, LiveConnection>;
@@ -34,6 +40,7 @@ interface AppState {
   screen: 'connections' | 'workspace';
   tabs: Tab[];
   activeTabId: string | null;
+  gridDrafts: Record<string, GridDraft>;
   /** Bumped to make the sidebar reload a container node: key = profileId + path */
   treeRefresh: Record<string, number>;
   toasts: Toast[];
@@ -48,6 +55,7 @@ interface AppState {
   openTab(tab: NewTab): string;
   closeTab(id: string): void;
   activateTab(id: string): void;
+  setGridDraft(id: string, draft: GridDraft | undefined): void;
   newSqlTab(profileId: string, sql?: string, context?: ExecContext, title?: string): string;
   refreshTree(profileId: string, container: Partial<ObjectPath>): void;
   toast(kind: Toast['kind'], text: string): void;
@@ -65,6 +73,7 @@ export const useApp = create<AppState>((set, get) => ({
   screen: 'connections',
   tabs: [],
   activeTabId: null,
+  gridDrafts: {},
   treeRefresh: {},
   toasts: [],
   sqlCounter: 0,
@@ -94,6 +103,10 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   async disconnect(profileId) {
+    const current = get();
+    const drafts = current.tabs.filter((t) => t.profileId === profileId).map((t) => current.gridDrafts[t.id]).filter(Boolean);
+    if (drafts.some((draft) => draft.saving)) return get().toast('info', 'Wait for the cell changes to finish saving.');
+    if (drafts.length && !window.confirm('Disconnect and discard the unsaved cell changes for this connection?')) return;
     await api.connection.close(profileId).catch(() => undefined);
     set((s) => {
       const connections = { ...s.connections };
@@ -103,6 +116,7 @@ export const useApp = create<AppState>((set, get) => ({
       return {
         connections,
         tabs,
+        gridDrafts: Object.fromEntries(tabs.flatMap(({ id }) => s.gridDrafts[id] ? [[id, s.gridDrafts[id]]] : [])),
         activeTabId: tabs.some((t) => t.id === s.activeTabId) ? s.activeTabId : (tabs[tabs.length - 1]?.id ?? null),
         activeProfileId: s.activeProfileId === profileId ? (remaining[0] ?? null) : s.activeProfileId,
         screen: remaining.length ? s.screen : 'connections',
@@ -140,18 +154,32 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   closeTab(id) {
+    const draft = get().gridDrafts[id];
+    if (draft?.saving) return get().toast('info', 'Wait for the cell changes to finish saving.');
+    if (draft && !window.confirm('Discard the unsaved cell changes in this tab?')) return;
     set((s) => {
       const idx = s.tabs.findIndex((t) => t.id === id);
       const tabs = s.tabs.filter((t) => t.id !== id);
       let activeTabId = s.activeTabId;
       if (s.activeTabId === id) activeTabId = tabs[Math.min(idx, tabs.length - 1)]?.id ?? null;
-      return { tabs, activeTabId };
+      const { [id]: _draft, ...gridDrafts } = s.gridDrafts;
+      return { tabs, activeTabId, gridDrafts };
     });
   },
 
   activateTab(id) {
     const t = get().tabs.find((x) => x.id === id);
     set({ activeTabId: id, ...(t ? { activeProfileId: t.profileId } : {}) });
+  },
+
+  setGridDraft(id, draft) {
+    set((s) => {
+      if (!s.tabs.some((t) => t.id === id)) return {};
+      const gridDrafts = { ...s.gridDrafts };
+      if (draft) gridDrafts[id] = draft;
+      else delete gridDrafts[id];
+      return { gridDrafts };
+    });
   },
 
   newSqlTab(profileId, sql = '', context, title) {

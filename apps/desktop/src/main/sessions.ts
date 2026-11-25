@@ -9,6 +9,7 @@ import {
   makeError,
   redactInfo,
   runBrowse,
+  runGridUpdates,
   runWrite,
   secretFieldsFor,
   splitStatements,
@@ -22,6 +23,7 @@ import {
   type DriverId,
   type DriverModule,
   type ExecContext,
+  type GridRowUpdate,
   type InsertSpec,
   type ObjectPath,
   type QueryCursor,
@@ -241,6 +243,12 @@ export class SessionManager {
   async insert(profileId: string, spec: InsertSpec) {
     const l = this.get(profileId);
     return runWrite(l.conn, l.conn.dialect.buildInsert(spec), ctxForObject(spec.object));
+  }
+
+  async updateCells(profileId: string, object: ObjectPath, rows: GridRowUpdate[]) {
+    const { conn } = this.get(profileId);
+    const structure = await this.structure(profileId, object, true);
+    return runGridUpdates(conn, structure, rows);
   }
 
   previewCreate(profileId: string, spec: CreateTableSpec) {

@@ -5,6 +5,13 @@ import { Modal } from './common';
 
 const ROW_H = 26;
 
+export interface GridEditing {
+  canEdit(row: number, col: number): boolean;
+  nullable(col: number): boolean;
+  changed(row: number, col: number): boolean;
+  change(row: number, col: number, value: string | null): void;
+}
+
 function renderCell(c: Cell) {
   if (c === null) return <span className="null">NULL</span>;
   if (c === '') return <span className="emptystr">(empty)</span>;
@@ -34,6 +41,7 @@ export function DataGrid({
   onSort,
   rowOffset = 0,
   emptyText = 'No rows',
+  editing,
 }: {
   columns: ResultColumn[];
   rows: Cell[][];
@@ -41,16 +49,19 @@ export function DataGrid({
   onSort?: (column: string) => void;
   rowOffset?: number;
   emptyText?: string;
+  editing?: GridEditing;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const colKey = columns.map((c) => c.name + ':' + c.type).join('|');
   const [widths, setWidths] = useState<number[]>(() => initialWidths(columns, rows));
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
   const [viewer, setViewer] = useState<{ col: ResultColumn; value: Cell } | null>(null);
+  const [editor, setEditor] = useState<{ r: number; c: number; initial: string | null } | null>(null);
 
   useEffect(() => {
     setWidths(initialWidths(columns, rows));
     setSel(null);
+    setEditor(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colKey]);
 
@@ -73,6 +84,17 @@ export function DataGrid({
     window.addEventListener('mouseup', up);
   };
 
+  function openCell(r: number, c: number) {
+    const value = rows[r][c];
+    if (editing?.canEdit(r, c)) setEditor({ r, c, initial: value === null ? null : cellToText(value) });
+    else setViewer({ col: columns[c], value });
+  }
+
+  function finishEdit() {
+    setEditor(null);
+    wrap.current?.focus();
+  }
+
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (!sel) return;
     if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
@@ -91,7 +113,10 @@ export function DataGrid({
       setSel({ r, c });
       v.scrollToIndex(r);
     }
-    if (e.key === 'Enter' && rows[sel.r]) setViewer({ col: columns[sel.c], value: rows[sel.r][sel.c] });
+    if ((e.key === 'Enter' || e.key === 'F2') && rows[sel.r]) {
+      e.preventDefault();
+      openCell(sel.r, sel.c);
+    }
   };
 
   const header = useMemo(
@@ -134,12 +159,47 @@ export function DataGrid({
                 {columns.map((col, ci) => (
                   <div
                     key={ci}
-                    className={`gcell${col.kind === 'number' ? ' num' : ''}${sel?.r === vr.index && sel?.c === ci ? ' sel' : ''}`}
+                    className={`gcell${col.kind === 'number' ? ' num' : ''}${sel?.r === vr.index && sel?.c === ci ? ' sel' : ''}${editing?.changed(vr.index, ci) ? ' draft-cell' : ''}`}
                     style={{ width: widths[ci] }}
                     onMouseDown={() => setSel({ r: vr.index, c: ci })}
-                    onDoubleClick={() => setViewer({ col, value: row[ci] })}
+                    onDoubleClick={() => openCell(vr.index, ci)}
                   >
-                    {renderCell(row[ci])}
+                    {editor?.r === vr.index && editor.c === ci && editing?.canEdit(vr.index, ci) ? (
+                      <div
+                        className="grid-cell-editor"
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onDoubleClick={(event) => event.stopPropagation()}
+                        onBlur={(event) => {
+                          if (!event.currentTarget.contains(event.relatedTarget)) setEditor(null);
+                        }}
+                      >
+                        <textarea
+                          autoFocus
+                          rows={1}
+                          aria-label={`Edit ${col.name}, row ${rowOffset + vr.index + 1}`}
+                          value={cellToText(row[ci])}
+                          placeholder={row[ci] === null ? 'NULL' : undefined}
+                          onFocus={(event) => event.currentTarget.select()}
+                          onChange={(event) => editing.change(vr.index, ci, event.target.value)}
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === 'Escape') {
+                              event.preventDefault();
+                              editing.change(vr.index, ci, editor.initial);
+                              finishEdit();
+                            } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                              event.preventDefault();
+                              finishEdit();
+                            }
+                          }}
+                        />
+                        {editing.nullable(ci) && (
+                          <button type="button" title="Set SQL NULL" onMouseDown={(event) => event.preventDefault()} onClick={() => { editing.change(vr.index, ci, null); finishEdit(); }}>
+                            NULL
+                          </button>
+                        )}
+                      </div>
+                    ) : renderCell(row[ci])}
                   </div>
                 ))}
               </div>

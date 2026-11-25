@@ -314,6 +314,7 @@ export interface ColumnInfo {
   defaultValue: string | null;
   isPrimaryKey: boolean;
   isIdentity?: boolean;
+  isGenerated?: boolean;
   comment?: string | null;
   kind: ValueKind;
 }
@@ -343,6 +344,8 @@ export interface TableStructure {
   indexesStatus: SectionStatus;
   constraints: ConstraintInfo[];
   constraintsStatus: SectionStatus;
+  /** Target supports an atomic grid write (independent of privileges and row identity). */
+  gridUpdate?: boolean;
 }
 
 /** 'yes' / 'no' when the database answered, 'unknown' when the account cannot be checked up front (the database still enforces it). */
@@ -351,6 +354,7 @@ export type Tri = 'yes' | 'no' | 'unknown';
 export interface ObjectPrivileges {
   select: Tri;
   insert: Tri;
+  update?: Tri;
   /** Create table in the given container. */
   create?: Tri;
   /** Why insert/create is not allowed, when known. */
@@ -368,6 +372,17 @@ export interface InsertSpec {
   /** Column metadata (from getStructure) for every column that may appear. */
   columns: Pick<ColumnInfo, 'name' | 'type' | 'kind'>[];
   rows: Record<string, InsertCell>[];
+}
+
+export interface GridCellChange {
+  column: string;
+  original: string | null;
+  value: string | null;
+}
+
+export interface GridRowUpdate {
+  key: { column: string; value: string }[];
+  changes: GridCellChange[];
 }
 
 export type ColumnDefault = { kind: 'none' } | { kind: 'literal'; value: string } | { kind: 'expression'; value: string };

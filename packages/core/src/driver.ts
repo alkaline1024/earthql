@@ -61,6 +61,8 @@ export interface DriverConnection {
   getStructure(object: ObjectPath): Promise<TableStructure>;
   getPrivileges(object: ObjectPath): Promise<ObjectPrivileges>;
   openCursor(stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions): QueryCursor;
+  /** Apply grid statements on a single connection in an atomic transaction. */
+  applyGridUpdates?(object: ObjectPath, statements: StatementInput[]): Promise<void>;
   /** Default execution context (profile database / catalog / schema). */
   defaultContext(): ExecContext;
   /** Available contexts for the SQL editor selector (databases or catalogs at the top level). */

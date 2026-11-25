@@ -49,6 +49,7 @@ export const api: EarthQLApi = {
   write: {
     previewInsert: (id, spec) => call('write:previewInsert', id, spec),
     insert: (id, spec) => call('write:insert', id, spec),
+    updateCells: (id, object, rows) => call('write:updateCells', id, object, rows),
     previewCreate: (id, spec) => call('write:previewCreate', id, spec),
     create: (id, spec) => call('write:create', id, spec),
   },
