@@ -252,19 +252,19 @@ function classifyMssql(e: any): ErrorCategory {
 class MssqlConnection implements DriverConnection {
   readonly driver = 'mssql' as const;
   readonly dialect = mssqlDialect;
-  private _pool?: Promise<sql.ConnectionPool>;
+  private readonly pools = new Map<string, Promise<sql.ConnectionPool>>();
 
   constructor(
     private readonly profile: MssqlProfile,
     private readonly secrets: Secrets,
   ) {}
 
-  config(): sql.config {
+  config(database = this.profile.database): sql.config {
     const tls = this.profile.tls;
     return {
       server: this.profile.host,
       port: this.profile.port || 1433,
-      database: this.profile.database || undefined,
+      database: database || undefined,
       user: this.profile.user,
       password: this.secrets.password ?? '',
       connectionTimeout: 15000,
@@ -282,24 +282,26 @@ class MssqlConnection implements DriverConnection {
     };
   }
 
-  pool(): Promise<sql.ConnectionPool> {
-    if (!this._pool) {
-      const p = new sql.ConnectionPool(this.config());
+  pool(database = this.profile.database): Promise<sql.ConnectionPool> {
+    const key = database || '';
+    let existing = this.pools.get(key);
+    if (!existing) {
+      const p = new sql.ConnectionPool(this.config(database));
       p.on('error', () => undefined);
-      this._pool = p.connect().catch((e) => {
-        this._pool = undefined;
+      existing = p.connect().catch((e) => {
+        this.pools.delete(key);
         throw e;
       });
+      this.pools.set(key, existing);
     }
-    return this._pool;
+    return existing;
   }
 
-  /** Run a metadata query; `db` adds a USE prefix on the same line so error line numbers are unchanged. */
   private async q<T = any>(text: string, params: Array<string | null> = [], db?: string): Promise<T[]> {
-    const pool = await this.pool();
+    const pool = await this.pool(db);
     const req = pool.request();
     params.forEach((v, i) => req.input(`p${i}`, sql.NVarChar(sql.MAX), v));
-    const res = await req.query((db ? `USE ${this.dialect.quoteIdent(db)}; ` : '') + text);
+    const res = await req.query(text);
     return (res.recordset ?? []) as T[];
   }
 
@@ -362,16 +364,30 @@ class MssqlConnection implements DriverConnection {
 
   async listChildren(parent: TreeNode | null): Promise<TreeNode[]> {
     if (!parent) {
-      const rows = await this.q<{ name: string; sys: number }>(
-        `SELECT name, CASE WHEN database_id <= 4 THEN 1 ELSE 0 END AS sys FROM sys.databases
-         WHERE HAS_DBACCESS(name) = 1 AND state = 0 ORDER BY CASE WHEN database_id <= 4 THEN 1 ELSE 0 END, name`,
+      const [server] = await this.q<{ edition: number; current_database: string }>(
+        `SELECT CAST(SERVERPROPERTY('EngineEdition') AS INT) AS edition, DB_NAME() AS current_database`,
       );
+      const azure = server.edition === 5;
+      const query = azure
+        ? `SELECT name, CASE WHEN name = 'master' THEN 1 ELSE 0 END AS sys FROM sys.databases
+           WHERE state = 0 ORDER BY CASE WHEN name = 'master' THEN 0 ELSE 1 END, name`
+        : `SELECT name, CASE WHEN database_id <= 4 THEN 1 ELSE 0 END AS sys FROM sys.databases
+           WHERE HAS_DBACCESS(name) = 1 AND state = 0 ORDER BY CASE WHEN database_id <= 4 THEN 1 ELSE 0 END, name`;
+      let limited = false;
+      let rows: { name: string; sys: number }[];
+      try {
+        rows = await this.q(query, [], azure && server.current_database !== 'master' ? 'master' : undefined);
+      } catch (e) {
+        if (!azure || server.current_database === 'master' || ![4060, 18456].includes(sqlErrorNumber(e) ?? 0)) throw e;
+        rows = await this.q(query);
+        limited = true;
+      }
       return rows.map((r) => ({
         kind: 'database' as const,
         name: r.name,
         path: {},
         hasChildren: true,
-        detail: r.name === this.profile.database ? 'default' : r.sys ? 'system' : undefined,
+        detail: limited && r.name === server.current_database ? 'Database list limited: cannot connect to master' : r.name === this.profile.database ? 'default' : r.sys ? 'system' : undefined,
       }));
     }
     if (parent.kind === 'database') {
@@ -568,10 +584,9 @@ class MssqlConnection implements DriverConnection {
 
   async executeTableStatements(object: ObjectPath, statements: string[], options: { disableForeignKeys: boolean }): Promise<void> {
     if (options.disableForeignKeys) throw makeError('unsupported', 'SQL Server cannot truncate a referenced table by disabling foreign key checks.');
-    const transaction = new sql.Transaction(await this.pool());
+    const transaction = new sql.Transaction(await this.pool(object.database));
     await transaction.begin();
     try {
-      if (object.database) await transaction.request().batch(`USE ${this.dialect.quoteIdent(object.database)}`);
       for (const statement of statements) await transaction.request().batch(statement);
       await transaction.commit();
     } catch (error) {
@@ -580,8 +595,8 @@ class MssqlConnection implements DriverConnection {
     }
   }
 
-  async applyGridUpdates(_object: ObjectPath, statements: StatementInput[]): Promise<void> {
-    const transaction = new sql.Transaction(await this.pool());
+  async applyGridUpdates(object: ObjectPath, statements: StatementInput[]): Promise<void> {
+    const transaction = new sql.Transaction(await this.pool(object.database));
     await executeAtomicGridUpdates(statements, {
       begin: () => transaction.begin(),
       update: async (statement) => {
@@ -617,9 +632,9 @@ class MssqlConnection implements DriverConnection {
   }
 
   async close(): Promise<void> {
-    const p = this._pool;
-    this._pool = undefined;
-    if (p) await p.then((x) => x.close()).catch(() => undefined);
+    const pools = [...this.pools.values()];
+    this.pools.clear();
+    await Promise.all(pools.map((p) => p.then((x) => x.close()).catch(() => undefined)));
   }
 }
 
@@ -649,7 +664,7 @@ class MssqlCursor implements QueryCursor {
 
   private async start(): Promise<void> {
     this.opts?.onPhase?.('connecting');
-    const pool = await this.owner.pool();
+    const pool = await this.owner.pool(this.ctx.database);
     if (this.closed) throw Object.assign(new Error('Canceled.'), { code: 'ECANCEL' });
     const req = pool.request();
     req.stream = true;
@@ -686,9 +701,7 @@ class MssqlCursor implements QueryCursor {
       buf.end();
     });
     this.opts?.onPhase?.('running');
-    // Run in the tab's database. Put USE on the same line so server-reported line numbers stay correct.
-    const prefix = this.ctx.database && params.length === 0 ? `USE ${mssqlDialect.quoteIdent(this.ctx.database)}; ` : '';
-    req.query(prefix + this.stmt.sql);
+    req.query(this.stmt.sql);
   }
 
   async fetch(maxRows: number): Promise<CursorChunk> {

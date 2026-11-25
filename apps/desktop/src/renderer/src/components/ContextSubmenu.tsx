@@ -24,7 +24,7 @@ export function ContextSubmenu({ label, disabled, children }: { label: string; d
     }}>
     <button ref={trigger} role="menuitem" disabled={disabled} aria-haspopup="menu" aria-expanded={open}
       onClick={() => setOpen(!open)}>{label}<span aria-hidden="true" style={{ float: 'right' }}>›</span></button>
-    {open && <div className="conn-submenu" ref={submenu} style={position} role="menu" aria-label={label}>{children}</div>}
+    {open && <div className="conn-submenu" ref={submenu} style={{ ...position, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }} role="menu" aria-label={label}>{children}</div>}
   </div>;
 }
 

@@ -4,8 +4,9 @@ import { contextBridge, ipcRenderer } from 'electron';
 const INVOKE = new Set([
   'updates:status', 'updates:install',
   'keybindings:apply',
-  'profiles:list', 'profiles:setDefaultDatabase', 'profiles:save', 'profiles:remove', 'profiles:test',
+  'profiles:list', 'profiles:setDefaultDatabase', 'profiles:save', 'profiles:remove', 'profiles:test', 'profiles:databases',
   'profiles:importTablePlus', 'profiles:exportTablePlus',
+  'groupFiles:read', 'groupFiles:save',
   'connection:open', 'connection:close',
   'connection:openSeparate', 'connection:reconnect', 'connection:closeProfile',
   'meta:children', 'meta:structure', 'meta:privileges', 'meta:completion',

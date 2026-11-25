@@ -10,6 +10,7 @@ import { SessionManager } from './sessions';
 import { executeTableAction, saveStructure } from './table-actions';
 import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob } from './table-files';
 import { exportConnections, importConnections } from './connection-transfer';
+import { readTableGroupFile, saveTableGroupFile } from './table-group-files';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
 import { clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
 
@@ -36,6 +37,8 @@ export function registerIpc(sessions: SessionManager): void {
   handle('profiles:list', null, () => loadProfiles().map(summary));
   handle('profiles:importTablePlus', null, importConnections);
   handle('profiles:exportTablePlus', null, exportConnections);
+  handle('groupFiles:read', null, readTableGroupFile);
+  handle('groupFiles:save', null, saveTableGroupFile);
 
   handle('profiles:setDefaultDatabase', null, (id: string, database: string) => {
     const profiles = loadProfiles();
@@ -86,6 +89,19 @@ export function registerIpc(sessions: SessionManager): void {
       return { ok: false, steps: [], error: conn.classifyError(e) };
     } finally {
       await conn.close().catch(() => undefined);
+    }
+  });
+
+  handle('profiles:databases', null, async (profile: ConnectionProfile, secrets: Secrets) => {
+    if (profile.driver !== 'mssql') throw new Error('Database selection is only available for SQL Server.');
+    const merged = { ...getSecrets(profile.id), ...secrets };
+    const conn = sessions.createConnection(profile, merged);
+    try {
+      return await conn.listChildren(null);
+    } catch (e) {
+      throw conn.classifyError(e);
+    } finally {
+      await conn.close();
     }
   });
 

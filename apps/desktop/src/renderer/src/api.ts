@@ -30,6 +30,10 @@ export const api: EarthQLApi = {
   keybindings: {
     apply: (overrides, suspended = false) => call('keybindings:apply', { overrides, suspended }),
   },
+  groupFiles: {
+    read: () => call('groupFiles:read'),
+    save: (text) => call('groupFiles:save', text),
+  },
   profiles: {
     setDefaultDatabase: (id, database) => call('profiles:setDefaultDatabase', id, database),
     list: () => call('profiles:list'),
@@ -38,6 +42,7 @@ export const api: EarthQLApi = {
     save: (p, s) => call('profiles:save', p, s),
     remove: (id) => call('profiles:remove', id),
     test: (p, s) => call('profiles:test', p, s),
+    databases: (p, s) => call('profiles:databases', p, s),
   },
   connection: {
     open: (id) => call('connection:open', id),

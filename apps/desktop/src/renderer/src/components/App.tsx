@@ -1,5 +1,6 @@
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { version as appVersion } from '../../../../package.json';
 import { api, onMenuCommand } from '../api';
 import { connectionName, useApp, type Tab } from '../store';
 import { ConnectionsScreen } from './ConnectionsScreen';
@@ -247,6 +248,7 @@ export function App() {
           </svg>
           Feedback &amp; Bug Report
         </button>
+        <span className="muted small" title={`EarthQL version ${appVersion}`}>v{appVersion}</span>
         <span className="spacer" />
         <UpdateButton />
         <NotificationsButton />

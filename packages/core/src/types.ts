@@ -63,6 +63,7 @@ export interface MssqlProfile extends ProfileBase {
   driver: 'mssql';
   host: string;
   port: number;
+  /** Empty to use the login's default database. */
   database: string;
   user: string;
   tls: TlsOptions;

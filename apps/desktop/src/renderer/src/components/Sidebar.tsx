@@ -5,7 +5,7 @@ import { connectionName, containerKey, noteError, orderedConnectionIds, pinnedTa
 import { TableGroupMenu, TableTreeContextMenu, TableTreeSelection } from './TableTreeSelection';
 import { useTableTreeSelection } from './table-tree-selection-context';
 import { treeNodeKey } from '../tree-selection';
-import { tableGroupContainer, type TableGroup } from '../table-groups';
+import { canDropTableNodes, TABLE_GROUP_DRAG_TYPE, TABLE_NODES_DRAG_TYPE, tableGroupContainer, tableNodesDragData, type TableGroup } from '../table-groups';
 import type { TableAction } from '../../../shared/table-actions';
 import { TableImportDialog } from './TableImportDialog';
 import { ContextSubmenu } from './ContextSubmenu';
@@ -463,9 +463,14 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
         </div>
       </div>
     );
-  if (nodes.length === 0) {
-    const hierarchy = useApp.getState().connections[profileId]?.capabilities.hierarchy ?? [];
-    const leafParent = parent?.kind === 'schema' || (parent?.kind === 'database' && hierarchy[1] === 'table');
+  const hierarchy = connection?.capabilities.hierarchy ?? [];
+  const leafParent = parent?.kind === 'schema' || (parent?.kind === 'database' && hierarchy[1] === 'table');
+  const containers = new Set(nodes.filter((node) => !node.hasChildren).map((node) => tableGroupContainer(node.path)));
+  if (leafParent || (!parent && hierarchy[0] === 'table')) {
+    containers.add(tableGroupContainer(parent ? nodePathAsContainer(parent) : connection?.defaultContext ?? {}));
+  }
+  const scopedGroups = selection.groups.filter((group) => containers.has(group.container));
+  if (nodes.length === 0 && scopedGroups.length === 0) {
     const what = leafParent ? 'No tables or views (or none visible to this account)' : parent ? 'No schemas visible' : 'Nothing visible to this account';
     return (
       <div className="tree-msg" style={{ paddingLeft: pad + 18 }}>
@@ -483,19 +488,19 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
   const ordered = pinnedTables.length
     ? [...shown].sort((a, b) => Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, a))) - Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, b))))
     : shown;
-  const containers = new Set(nodes.filter((node) => !node.hasChildren).map((node) => tableGroupContainer(node.path)));
-  const groups = selection.groups.filter((group) => containers.has(group.container)
-    && (!filter || ordered.some((node) => group.nodeKeys.includes(treeNodeKey(node)))));
+  const groups = scopedGroups.filter((group) => !filter || ordered.some((node) => group.nodeKeys.includes(treeNodeKey(node))));
   const grouped = new Set(groups.flatMap((group) => group.nodeKeys));
   return (
     <>
-      {ordered.filter((node) => node.hasChildren || !grouped.has(treeNodeKey(node))).map((n) => (
-        <TreeItem key={n.kind + n.name} profileId={profileId} node={n} depth={depth} filter={filter} onSeparate={onSeparate} />
-      ))}
       {groups.map((group) => <TableGroupBranch key={group.id} group={group} depth={depth} filter={filter}>
         {ordered.filter((node) => !node.hasChildren && group.nodeKeys.includes(treeNodeKey(node))).map((node) =>
           <TreeItem key={treeNodeKey(node)} profileId={profileId} node={node} depth={depth + 1} filter={filter} onSeparate={onSeparate} />)}
       </TableGroupBranch>)}
+      <UngroupedTableDropArea containers={containers} depth={depth}>
+        {ordered.filter((node) => node.hasChildren || !grouped.has(treeNodeKey(node))).map((n) => (
+          <TreeItem key={n.kind + n.name} profileId={profileId} node={n} depth={depth} filter={filter} onSeparate={onSeparate} />
+        ))}
+      </UngroupedTableDropArea>
       {hasOtherDatabases && (
         <button type="button" className="btn small ghost" style={{ margin: '6px 10px' }}
           aria-expanded={showOtherDatabases} onClick={() => setShowOtherDatabases((show) => !show)}>
@@ -512,11 +517,66 @@ export function TableGroupBranch({ group, depth, filter, children }: {
   const selection = useTableTreeSelection();
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const toggle = useRef<HTMLButtonElement>(null);
+  const header = useRef<HTMLDivElement>(null);
+  const [dropAfter, setDropAfter] = useState<boolean | null>(null);
+  const [dropNodes, setDropNodes] = useState(false);
+  const source = selection.groups.find((item) => item.id === selection.draggedGroup);
+  const canDrop = !!source && source.id !== group.id && source.profileId === group.profileId && source.container === group.container;
+  const canDropNodes = canDropTableNodes(selection.draggedNodes, new Set([group.container]));
+  useEffect(() => { setDropAfter(null); setDropNodes(false); }, [selection.draggedGroup, selection.draggedNodes]);
   const expanded = !group.collapsed || !!filter;
-  return <div role="treeitem" aria-level={depth + 1} aria-expanded={expanded} aria-label={group.name}>
-    <div className="sidebar-table-group-row" style={{ paddingLeft: 6 + depth * 14, color: group.color }}
+  return <div role="treeitem" aria-level={depth + 1} aria-expanded={expanded} aria-label={group.name}
+    style={{
+      opacity: selection.draggedGroup === group.id ? 0.45 : undefined,
+      boxShadow: canDropNodes && dropNodes ? 'inset 0 0 0 2px var(--accent)'
+        : canDrop && dropAfter !== null ? `inset 0 ${dropAfter ? '-2' : '2'}px 0 var(--accent)` : undefined,
+    }}
+    onDragOver={(event) => {
+      if (canDropNodes && event.dataTransfer.types.includes(TABLE_NODES_DRAG_TYPE)) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setDropNodes(true);
+        return;
+      }
+      if (!canDrop || !header.current || !event.dataTransfer.types.includes(TABLE_GROUP_DRAG_TYPE)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      const bounds = header.current.getBoundingClientRect();
+      setDropAfter(event.clientY > bounds.top + bounds.height / 2);
+    }}
+    onDragLeave={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) { setDropAfter(null); setDropNodes(false); }
+    }}
+    onDrop={(event) => {
+      if (canDropNodes && selection.draggedNodes
+        && event.dataTransfer.getData(TABLE_NODES_DRAG_TYPE) === tableNodesDragData(selection.draggedNodes)) {
+        event.preventDefault();
+        event.stopPropagation();
+        selection.assignGroup(selection.draggedNodes, group.id);
+        selection.setDraggedNodes(null);
+        setDropNodes(false);
+        return;
+      }
+      if (!canDrop || !source || !header.current || event.dataTransfer.getData(TABLE_GROUP_DRAG_TYPE) !== source.id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const bounds = header.current.getBoundingClientRect();
+      selection.moveGroup(source.id, group.id, event.clientY > bounds.top + bounds.height / 2);
+      selection.setDraggedGroup(null);
+      setDropAfter(null);
+    }}>
+    <div className="sidebar-table-group-row" ref={header} style={{ paddingLeft: 6 + depth * 14, color: group.color }}
       onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
-      <button type="button" ref={toggle} className="sidebar-table-group-toggle" aria-expanded={expanded}
+      <button type="button" ref={toggle} className="sidebar-table-group-toggle" aria-expanded={expanded} draggable
+        title="Drag to reorder groups" style={{ cursor: selection.draggedGroup === group.id ? 'grabbing' : 'grab' }}
+        onDragStart={(event) => {
+          event.stopPropagation();
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData(TABLE_GROUP_DRAG_TYPE, group.id);
+          setMenu(null);
+          selection.setDraggedGroup(group.id);
+        }}
+        onDragEnd={() => { selection.setDraggedGroup(null); setDropAfter(null); }}
         onClick={() => selection.collapseGroups(expanded, group.id)}>
         <span className={`chev${expanded ? ' open' : ''}`} aria-hidden="true">▶</span>
         <span className="sidebar-table-group-dot" style={{ background: group.color }} />
@@ -532,7 +592,43 @@ export function TableGroupBranch({ group, depth, filter, children }: {
   </div>;
 }
 
-function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: string; node: TreeNode; depth: number; filter: string; onSeparate?: (name: string) => void }) {
+export function UngroupedTableDropArea({ containers, depth, children }: {
+  containers: ReadonlySet<string>; depth: number; children?: ReactNode;
+}) {
+  const selection = useTableTreeSelection();
+  const [hover, setHover] = useState(false);
+  const nodes = selection.draggedNodes;
+  const keys = new Set(nodes?.map(treeNodeKey));
+  const canDrop = canDropTableNodes(nodes, containers)
+    && selection.groups.some((group) => group.nodeKeys.some((key) => keys.has(key)));
+  useEffect(() => { setHover(false); }, [nodes]);
+  return <div role={containers.size ? 'group' : undefined} aria-label={containers.size ? 'Ungrouped tables and views' : undefined}
+    style={{ boxShadow: canDrop && hover ? 'inset 0 0 0 2px var(--accent)' : undefined }}
+    onDragOver={(event) => {
+      if (!canDrop || !event.dataTransfer.types.includes(TABLE_NODES_DRAG_TYPE)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      setHover(true);
+    }}
+    onDragLeave={(event) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHover(false);
+    }}
+    onDrop={(event) => {
+      if (!canDrop || !nodes || event.dataTransfer.getData(TABLE_NODES_DRAG_TYPE) !== tableNodesDragData(nodes)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      selection.assignGroup(nodes, null);
+      selection.setDraggedNodes(null);
+      setHover(false);
+    }}>
+    {canDrop && <div className="tree-msg" style={{ paddingLeft: 6 + depth * 14, paddingTop: 10, paddingBottom: 10 }}>
+      Drop here to remove from Group
+    </div>}
+    {children}
+  </div>;
+}
+
+export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: string; node: TreeNode; depth: number; filter: string; onSeparate?: (name: string) => void }) {
   const sc = useShortcuts();
   const selection = useTableTreeSelection();
   const selectedNodes = selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node)) ? selection.selected : [node];
@@ -550,15 +646,18 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
   const pinnedTables = useApp((s) => s.pinnedTables);
   const pinProfileId = conn?.profileId ?? profileId;
   const isSelected = !node.hasChildren && selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node));
+  const draggable = node.kind === 'table' || node.kind === 'view';
+  const dragging = selection.draggedNodes?.some((item) => treeNodeKey(item) === treeNodeKey(node));
   const isPinned = !node.hasChildren && pinnedTables.includes(pinnedTableKey(pinProfileId, node));
   const allSelectedPinned = !node.hasChildren && selectedNodes.every((item) => pinnedTables.includes(pinnedTableKey(pinProfileId, item)));
 
   const container = nodePathAsContainer(node);
+  const tableContainer = node.kind === 'schema' || (node.kind === 'database' && conn?.capabilities.hierarchy[1] === 'table');
   const canCreateHere = conn?.capabilities.createTable && (node.kind === 'schema' || (node.kind === 'database' && conn.capabilities.hierarchy[1] === 'table'));
 
   const isDefaultDatabase = node.kind === 'database' && conn?.defaultContext.database === node.name;
   const detail = node.kind === 'database' && conn
-    ? isDefaultDatabase ? 'default' : node.detail === 'default' ? undefined : node.detail
+    ? node.detail?.startsWith('Database list limited:') ? node.detail : isDefaultDatabase ? 'default' : node.detail === 'default' ? undefined : node.detail
     : node.detail;
 
   async function setDefaultDatabase() {
@@ -605,9 +704,20 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
       <div
         ref={rowRef}
         className={`tree-row${isSelected ? ' selected' : ''}${unsaved ? ' unsaved' : ''}`}
-        style={{ paddingLeft: 6 + depth * 14 }}
+        style={{ paddingLeft: 6 + depth * 14, opacity: dragging ? 0.45 : undefined, cursor: draggable ? dragging ? 'grabbing' : 'grab' : undefined }}
         role="treeitem" aria-level={depth + 1} aria-selected={node.hasChildren ? undefined : isSelected} aria-expanded={node.hasChildren ? open : undefined}
         data-tree-node={node.hasChildren ? undefined : JSON.stringify(node)}
+        draggable={draggable}
+        onDragStart={(event) => {
+          if (!draggable) { event.preventDefault(); return; }
+          event.stopPropagation();
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData(TABLE_NODES_DRAG_TYPE, tableNodesDragData(selectedNodes));
+          setMenu(null);
+          if (!isSelected) selection.select(node);
+          selection.setDraggedNodes([...selectedNodes]);
+        }}
+        onDragEnd={() => selection.setDraggedNodes(null)}
         tabIndex={0}
         onKeyDown={(event) => {
           tableShortcut(event);
@@ -650,7 +760,8 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
               <MenuItem label="Open structure" onClick={() => (setMenu(null), openObject('structure', selectedNodes))} />
             </>
           )}
-          {!node.hasChildren && <TableGroupMenu nodes={selectedNodes} node={node} onClose={() => setMenu(null)} />}
+          {(!node.hasChildren || tableContainer) && <TableGroupMenu nodes={node.hasChildren ? [] : selectedNodes}
+            node={node.hasChildren ? undefined : node} scope={tableGroupContainer(container)} onClose={() => setMenu(null)} />}
           <MenuItem label="New SQL editor here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
           {!node.hasChildren && (
             <MenuItem
@@ -671,12 +782,12 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
           )}
           {!node.hasChildren && <>
             <div className="conn-menu-separator" role="separator" />
-            {node.kind === 'table' && <ContextSubmenu label="Import" disabled={multiple}>
+            {node.kind === 'table' && <ContextSubmenu label="Import Table" disabled={multiple}>
               <button role="menuitem" onClick={() => { setMenu(null); setImportFormat('csv'); }}>From CSV…</button>
               <button role="menuitem" onClick={() => { setMenu(null); setImportFormat('json'); }}>From JSON…</button>
               <button role="menuitem" onClick={() => { setMenu(null); setImportFormat('sql'); }}>From SQL Dump…</button>
             </ContextSubmenu>}
-            <ContextSubmenu label="Export">
+            <ContextSubmenu label="Export Table">
               <button role="menuitem" onClick={() => { setMenu(null); selection.export(selectedNodes); }}>{multiple ? `Export ${selectedNodes.length} Tables…` : 'Export Table…'}</button>
             </ContextSubmenu>
           </>}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
+import { version as appVersion } from '../../../../package.json';
 import {
   DRIVER_LABELS,
   secretFieldsFor,
@@ -8,6 +9,7 @@ import {
   type SecretField,
   type Secrets,
   type TestResult,
+  type TreeNode,
   type TlsMode,
 } from '@earthql/core';
 import { createPortal } from 'react-dom';
@@ -30,10 +32,26 @@ function blankProfile(driver: DriverId): ConnectionProfile {
     case 'mysql':
       return { ...base, driver, host: 'localhost', port: 3306, database: '', user: 'root', tls: { mode: 'disable' } };
     case 'mssql':
-      return { ...base, driver, host: 'localhost', port: 1433, database: 'master', user: 'sa', tls: { mode: 'require' } };
+      return { ...base, driver, host: 'localhost', port: 1433, database: '', user: 'sa', tls: { mode: 'require' } };
     case 'databricks':
       return { ...base, driver, host: '', httpPath: '', authMode: 'oauth-m2m', clientId: '', catalog: '', schema: '' };
   }
+}
+
+export function validateProfile(p: ConnectionProfile, secrets: Secrets, storedSecrets: SecretField[]): string[] {
+  const errs: string[] = [];
+  if (!p.name.trim()) errs.push('Name');
+  if (!p.host.trim()) errs.push(p.driver === 'databricks' ? 'Server Hostname' : 'Host');
+  if (p.driver === 'databricks') {
+    if (!p.httpPath.trim()) errs.push('HTTP Path');
+    if (p.authMode === 'oauth-m2m' && !p.clientId?.trim()) errs.push('Client ID');
+    if (p.authMode === 'oauth-m2m' && !secrets.clientSecret && !storedSecrets.includes('clientSecret')) errs.push('Client secret');
+    if (p.authMode === 'access-token' && !secrets.accessToken && !storedSecrets.includes('accessToken')) errs.push('Access token');
+  } else {
+    if (!p.user.trim()) errs.push('Username');
+    if (p.driver === 'postgres' && !p.database.trim()) errs.push('Database');
+  }
+  return errs;
 }
 
 function describe(p: ConnectionProfile): string {
@@ -332,7 +350,7 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
               }}
               onDoubleClick={() => void connect(profile.id)}
             >
-              <span className="c-logo"><DriverIcon driver={profile.driver} size={40} /></span>
+              <span className="c-logo"><DriverIcon driver={profile.driver} size={36} /></span>
               <div className="c-name">
                 <span className="c-title" title={profile.name || '(unnamed)'}>
                   {profile.name || '(unnamed)'}
@@ -352,6 +370,13 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
             </div>
           ))}
         </div>
+        <section className="conn-about" aria-label="About EarthQL">
+          <img src="./earthql.png" alt="" width={72} height={72} />
+          <div>
+            <div className="conn-about-title"><strong>EarthQL</strong><span className="muted small">v{appVersion}</span></div>
+            <p>Your databases, together in one workspace.</p>
+          </div>
+        </section>
       </div>
 
       {menu && createPortal(
@@ -468,6 +493,7 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
               <img src="./earthql-q.png" alt="" width={192} height={192} />
               <span aria-hidden="true">L</span>
             </h2>
+            <span className="muted small">v{appVersion}</span>
             <p>Connect to PostgreSQL, MySQL, Databricks or Microsoft SQL Server.</p>
             <button className="btn primary" onClick={() => startNew()}>
               Add a connection
@@ -620,6 +646,12 @@ function ProfileEditor({
   const [test, setTest] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [databasePicker, setDatabasePicker] = useState(false);
+  const [databases, setDatabases] = useState<TreeNode[]>([]);
+  const [databaseSearch, setDatabaseSearch] = useState('');
+  const [databaseLoading, setDatabaseLoading] = useState(false);
+  const [databaseError, setDatabaseError] = useState<ErrorInfo | null>(null);
+  const databaseRequest = useRef(0);
   const saveButton = useRef<HTMLButtonElement>(null);
   useEffect(() => onMenuCommand((command) => {
     if (command === 'save' && !document.querySelector('[role="dialog"][aria-modal="true"]')) {
@@ -633,21 +665,7 @@ function ProfileEditor({
   const set = <K extends string>(k: K, v: unknown) => setP((x) => ({ ...x, [k]: v }) as ConnectionProfile);
   const secretFields = secretFieldsFor(p as any);
 
-  const validation = useMemo(() => {
-    const errs: string[] = [];
-    if (!p.name.trim()) errs.push('Name');
-    if (!p.host.trim()) errs.push(p.driver === 'databricks' ? 'Server Hostname' : 'Host');
-    if (p.driver === 'databricks') {
-      if (!p.httpPath.trim()) errs.push('HTTP Path');
-      if (p.authMode === 'oauth-m2m' && !p.clientId?.trim()) errs.push('Client ID');
-      if (p.authMode === 'oauth-m2m' && !secrets.clientSecret && !storedSecrets.includes('clientSecret')) errs.push('Client secret');
-      if (p.authMode === 'access-token' && !secrets.accessToken && !storedSecrets.includes('accessToken')) errs.push('Access token');
-    } else {
-      if (!p.user.trim()) errs.push('Username');
-      if ((p.driver === 'postgres' || p.driver === 'mssql') && !p.database.trim()) errs.push('Database');
-    }
-    return errs;
-  }, [p, secrets, storedSecrets]);
+  const validation = useMemo(() => validateProfile(p, secrets, storedSecrets), [p, secrets, storedSecrets]);
 
   const secretsToSend = (): Secrets => {
     const out: Secrets = {};
@@ -667,6 +685,23 @@ function ProfileEditor({
       setTest({ ok: false, steps: [], error: errorInfo(e) });
     } finally {
       setTesting(false);
+    }
+  }
+
+  async function pickDatabase() {
+    const request = ++databaseRequest.current;
+    setDatabasePicker(true);
+    setDatabaseSearch('');
+    setDatabases([]);
+    setDatabaseError(null);
+    setDatabaseLoading(true);
+    try {
+      const nodes = await api.profiles.databases(p, secretsToSend());
+      if (request === databaseRequest.current) setDatabases(nodes);
+    } catch (e) {
+      if (request === databaseRequest.current) setDatabaseError(errorInfo(e));
+    } finally {
+      if (request === databaseRequest.current) setDatabaseLoading(false);
     }
   }
 
@@ -806,12 +841,15 @@ function ProfileEditor({
               />
             </div>
             <span className="lbl">Database</span>
-            <input
-              className="input mono"
-              value={p.database ?? ''}
-              placeholder={p.driver === 'mysql' ? 'optional default database' : ''}
-              onChange={(e) => set('database', e.target.value)}
-            />
+            <div className="row">
+              <input
+                className="input mono grow"
+                value={p.database ?? ''}
+                placeholder={p.driver === 'mssql' ? 'optional — login default' : p.driver === 'mysql' ? 'optional default database' : ''}
+                onChange={(e) => set('database', e.target.value)}
+              />
+              {p.driver === 'mssql' && <button type="button" className="btn" aria-label="Choose database" title="Choose database" onClick={() => void pickDatabase()}>…</button>}
+            </div>
             <span className="lbl">Username</span>
             <input className="input mono" value={p.user} onChange={(e) => set('user', e.target.value)} />
             {p.driver === 'mssql' && <span className="help">SQL Server Authentication (SQL login).</span>}
@@ -863,6 +901,20 @@ function ProfileEditor({
           </>
         )}
       </div>
+
+      {databasePicker && <Modal narrow title="Choose database" onClose={() => { databaseRequest.current++; setDatabasePicker(false); }}>
+        <input className="input" style={{ width: '100%', marginBottom: 10 }} autoFocus placeholder="Search databases…" value={databaseSearch} onChange={(e) => setDatabaseSearch(e.target.value)} />
+        {databaseLoading ? <div className="muted"><Spinner /> Loading databases…</div> : databaseError ? <ErrorView error={databaseError} /> : (
+          <div className="database-picker-list">
+            {databases.filter((node) => node.name.toLocaleLowerCase().includes(databaseSearch.toLocaleLowerCase())).map((node) => (
+              <button type="button" className="database-picker-item" key={node.name} onClick={() => { set('database', node.name); setDatabasePicker(false); }}>
+                <span>{node.name}</span>{node.detail && <span className="muted small">{node.detail}</span>}
+              </button>
+            ))}
+            {!databases.some((node) => node.name.toLocaleLowerCase().includes(databaseSearch.toLocaleLowerCase())) && <div className="muted">No databases found.</div>}
+          </div>
+        )}
+      </Modal>}
 
       <div className="row" style={{ marginTop: 22, gap: 8 }}>
         <button className="btn" onClick={() => void runTest()} disabled={testing}>

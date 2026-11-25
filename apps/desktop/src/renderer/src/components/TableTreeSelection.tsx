@@ -1,16 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { ObjectPath, TreeNode } from '@earthql/core';
 import type { TableAction } from '../../../shared/table-actions';
-import { errorInfo, uid } from '../api';
+import { api, errorInfo, uid } from '../api';
 import { useApp } from '../store';
 import { selectTreeNodes, treeNodeKey } from '../tree-selection';
-import { assignTableGroup, tableGroupContainer, type TableGroup } from '../table-groups';
+import { assignTableGroup, exportTableGroups, importTableGroups, reorderTableGroups, TABLE_GROUP_DRAG_TYPE, TABLE_NODES_DRAG_TYPE, tableGroupContainer, tableGroupParent, type TableGroup } from '../table-groups';
+import { parseTableGroupFile, type TableGroupFile } from '../../../shared/table-group-transfer';
 import { TAB_GROUP_COLORS } from '../tab-groups';
 import { TableActionDialog } from './TableActionDialog';
 import { TableExportDialog } from './TableExportDialog';
 import { TableTreeSelectionContext as Context, useTableTreeSelection } from './table-tree-selection-context';
 import { ContextSubmenu } from './ContextSubmenu';
-import { Modal } from './common';
+import { Modal, Spinner } from './common';
 
 
 export function TableTreeSelection({ profileId, filter, children }: { profileId: string; filter: string; children: ReactNode }) {
@@ -23,8 +24,42 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
   const groupProfileId = useApp((state) => state.connections[profileId]?.profileId ?? profileId);
   const allGroups = useApp((state) => state.tableGroups);
   const groups = allGroups.filter((group) => group.profileId === groupProfileId);
+  const [draggedGroup, setDraggedGroup] = useState<string | null>(null);
+  const [draggedNodes, setDraggedNodes] = useState<TreeNode[] | null>(null);
   const [groupEditor, setGroupEditor] = useState<{ id?: string; name: string; color: string; nodes: TreeNode[] } | null>(null);
   const [groupError, setGroupError] = useState<string | null>(null);
+  const importRequest = useRef(0);
+  const [importState, setImportState] = useState<{
+    container: string; busy: boolean; replace: boolean; file?: TableGroupFile; nodes: TreeNode[];
+    matched: number; missing: string[]; error: string | null;
+  } | null>(null);
+  const closeImport = () => { importRequest.current += 1; setImportState(null); };
+  const exportGroups = async (container: string, groupId?: string) => {
+    const state = useApp.getState();
+    try {
+      const file = exportTableGroups(state.tableGroups.filter((group) =>
+        group.profileId === groupProfileId && group.container === container && (!groupId || group.id === groupId)));
+      const result = await api.groupFiles.save(JSON.stringify(file, null, 2));
+      if (result.status === 'ok') state.toast('ok', 'Groups exported.');
+    } catch (error) { state.toast('error', errorInfo(error).message); }
+  };
+  const importGroups = async (container: string) => {
+    const request = ++importRequest.current;
+    setImportState({ container, busy: true, replace: true, nodes: [], matched: 0, missing: [], error: null });
+    try {
+      const text = await api.groupFiles.read();
+      if (request !== importRequest.current) return;
+      if (text === null) { closeImport(); return; }
+      const file = parseTableGroupFile(text);
+      const nodes = await api.meta.children(profileId, tableGroupParent(container));
+      if (request !== importRequest.current) return;
+      const preview = importTableGroups([], groupProfileId, container, file, nodes, true, uid);
+      setImportState({ container, busy: false, replace: true, file, nodes, matched: preview.matched, missing: preview.missing, error: null });
+    } catch (error) {
+      if (request === importRequest.current) setImportState((current) =>
+        current && { ...current, busy: false, error: errorInfo(error).message });
+    }
+  };
   const editGroup = (group: TableGroup | null, nodes: TreeNode[] = []) => {
     setGroupError(null);
     setGroupEditor({ id: group?.id, name: group?.name ?? '', color: group?.color ?? TAB_GROUP_COLORS[0], nodes });
@@ -39,7 +74,24 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
     state.saveTableGroups(state.tableGroups.map((group) =>
       group.profileId === groupProfileId && (!id || group.id === id) ? { ...group, collapsed } : group));
   };
+  const moveGroup = (sourceId: string, targetId: string, after: boolean) => {
+    const state = useApp.getState();
+    try {
+      const next = reorderTableGroups(state.tableGroups, sourceId, targetId, after);
+      if (next !== state.tableGroups) state.saveTableGroups(next);
+    } catch (error) { state.toast('error', errorInfo(error).message); }
+  };
   const visible = () => Array.from(tree.current?.querySelectorAll<HTMLElement>('[data-tree-node]') ?? []).map((row) => JSON.parse(row.dataset.treeNode!) as TreeNode);
+  useEffect(() => {
+    if (!draggedGroup && !draggedNodes) return;
+    const finish = () => { setDraggedGroup(null); setDraggedNodes(null); };
+    window.addEventListener('dragend', finish, true);
+    window.addEventListener('blur', finish);
+    return () => {
+      window.removeEventListener('dragend', finish, true);
+      window.removeEventListener('blur', finish);
+    };
+  }, [draggedGroup, draggedNodes]);
   useEffect(() => {
     const tab = useApp.getState().tabs.find((item) => item.id === activeTabId);
     if (tab?.kind === 'table' && tab.profileId === profileId && !tree.current?.contains(document.activeElement)) {
@@ -74,6 +126,11 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
     });
   };
   return <Context.Provider value={{ selected, select, visible, groups, editGroup, assignGroup, collapseGroups,
+    exportGroups: (container, id) => { void exportGroups(container, id); },
+    importGroups: (container) => { void importGroups(container); },
+    draggedGroup, moveGroup, draggedNodes,
+    setDraggedGroup: (id) => { setDraggedGroup(id); if (id !== null) setDraggedNodes(null); },
+    setDraggedNodes: (nodes) => { setDraggedNodes(nodes); if (nodes !== null) setDraggedGroup(null); },
     focus: (node) => {
       const row = Array.from(tree.current?.querySelectorAll<HTMLElement>('[data-tree-node]') ?? []).find((row) => treeNodeKey(JSON.parse(row.dataset.treeNode!)) === treeNodeKey(node));
       row?.focus(); row?.scrollIntoView({ block: 'nearest' });
@@ -83,6 +140,15 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
   }}>
     {selected.length > 1 && <div className="tree-selection-count">{selected.length} objects selected</div>}
     <div className="tree" role="tree" aria-label="Tables and views" aria-multiselectable="true" tabIndex={0} ref={tree}
+      onDragOver={(event) => {
+        const dragging = draggedGroup && event.dataTransfer.types.includes(TABLE_GROUP_DRAG_TYPE)
+          || draggedNodes && event.dataTransfer.types.includes(TABLE_NODES_DRAG_TYPE);
+        if (!dragging) return;
+        const element = event.currentTarget;
+        const bounds = element.getBoundingClientRect();
+        if (event.clientY < bounds.top + 36) element.scrollTop -= 18;
+        else if (event.clientY > bounds.bottom - 36) element.scrollTop += 18;
+      }}
       onKeyDown={(event) => {
         if ((event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"], .modal, .conn-context-menu')) return;
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
@@ -135,15 +201,58 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
         </div>
       </form>
     </Modal>}
+    {importState && <Modal title="Import Groups" narrow onClose={closeImport}>
+      {importState.busy ? <div className="row"><Spinner /> Reading groups and table/view names…</div> : <>
+        {importState.file && <>
+          <p>{importState.file.groups.length} groups · {importState.matched} matching tables/views</p>
+          <div style={{ maxHeight: 180, overflow: 'auto' }}>
+            {importState.file.groups.map((group, index) => <div className="row" key={index}>
+              <span className="sidebar-table-group-dot" style={{ background: group.color }} />{group.name}
+            </div>)}
+          </div>
+          {importState.missing.length > 0 && <p role="status" style={{ maxHeight: 120, overflow: 'auto', overflowWrap: 'anywhere' }}>
+            Unmatched names (skipped): {importState.missing.join(', ')}
+          </p>}
+          {!importState.matched && <p role="alert">No names matched. Imported groups will be empty.</p>}
+          <label className="row">
+            <input type="checkbox" checked={importState.replace}
+              onChange={(event) => setImportState({ ...importState, replace: event.target.checked })} />
+            Replace existing groups in this database/schema
+          </label>
+          <p className="muted">{importState.replace ? 'Other databases/schemas are unchanged.' : 'Groups are appended; matching objects move out of existing groups.'} Database objects are never changed.</p>
+        </>}
+        {importState.error && <p role="alert" className="err">{importState.error}</p>}
+      </>}
+      <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+        <button type="button" className="btn" onClick={closeImport}>Cancel</button>
+        {!importState.busy && <button type="button" className="btn" onClick={() => { void importGroups(importState.container); }}>Choose File…</button>}
+        <button type="button" className="btn primary" disabled={importState.busy || !importState.file}
+          onClick={() => {
+            if (!importState.file) return;
+            try {
+              const state = useApp.getState();
+              const result = importTableGroups(state.tableGroups, groupProfileId, importState.container,
+                importState.file, importState.nodes, importState.replace, uid);
+              if (!state.saveTableGroups(result.groups)) {
+                setImportState({ ...importState, error: 'Sidebar table groups could not be saved.' });
+                return;
+              }
+              state.refreshTree(profileId, tableGroupParent(importState.container)?.path ?? {});
+              state.toast('ok', `${importState.file.groups.length} groups imported; ${result.matched} tables/views matched, ${result.missing.length} names skipped.`);
+              closeImport();
+            } catch (error) { setImportState({ ...importState, error: errorInfo(error).message }); }
+          }}>Import</button>
+      </div>
+    </Modal>}
   </Context.Provider>;
 }
 
-export function TableGroupMenu({ nodes = [], node, group, onClose }: {
-  nodes?: TreeNode[]; node?: TreeNode; group?: TableGroup; onClose(): void;
+export function TableGroupMenu({ nodes = [], node, group, scope, onClose }: {
+  nodes?: TreeNode[]; node?: TreeNode; group?: TableGroup; scope?: string; onClose(): void;
 }) {
   const selection = useTableTreeSelection();
   const target = node ?? nodes[0];
-  const container = tableGroupContainer(target?.path ?? {});
+  const container = group?.container ?? scope ?? tableGroupContainer(target?.path ?? {});
   const available = selection.groups.filter((group) => group.container === container);
   const current = group ?? (target && selection.groups.find((group) => group.nodeKeys.includes(treeNodeKey(target))));
   const compatible = nodes.every((node) => tableGroupContainer(node.path) === container);
@@ -152,7 +261,7 @@ export function TableGroupMenu({ nodes = [], node, group, onClose }: {
     {group && <button type="button" role="menuitem" onClick={() => { onClose(); selection.editGroup(group); }}>Edit Group…</button>}
     {!group && nodes.some((node) => selection.groups.some((group) => group.nodeKeys.includes(treeNodeKey(node)))) &&
       <button type="button" role="menuitem" onClick={() => { onClose(); selection.assignGroup(nodes, null); }}>Remove from Group</button>}
-    {!group && <ContextSubmenu label="Add to Group" disabled={!compatible}>
+    {!group && nodes.length > 0 && <ContextSubmenu label="Add to Group" disabled={!compatible}>
       {available.map((group) => <button type="button" role="menuitem" key={group.id}
         onClick={() => { onClose(); selection.assignGroup(nodes, group.id); }}>
         <span className="sidebar-table-group-dot" style={{ background: group.color }} />{group.name}
@@ -168,6 +277,12 @@ export function TableGroupMenu({ nodes = [], node, group, onClose }: {
       onClick={() => { onClose(); selection.collapseGroups(true); }}>Collapse All Group</button>
     <button type="button" role="menuitem" disabled={!selection.groups.length}
       onClick={() => { onClose(); selection.collapseGroups(false); }}>Expand All Group</button>
+    {group && <button type="button" role="menuitem"
+      onClick={() => { onClose(); selection.exportGroups(container, group.id); }}>Export Group…</button>}
+    <button type="button" role="menuitem" disabled={!available.length}
+      onClick={() => { onClose(); selection.exportGroups(container); }}>Export Groups…</button>
+    <button type="button" role="menuitem" onClick={() => { onClose(); selection.importGroups(container); }}>Import Groups…</button>
+    <div className="conn-menu-separator" role="separator" />
   </>;
 }
 
@@ -188,7 +303,7 @@ export function TableTreeContextMenu({ position, onClose, onEscape, onKeyDown, w
     return () => window.removeEventListener('mousedown', onClose);
   }, [onClose]);
   return <div className="conn-context-menu table-tree-context-menu" ref={ref} role="menu" aria-label="Table actions"
-    style={{ position: 'fixed', left: position.x, top: position.y, width, zIndex: 60, padding: 4, borderRadius: 8 }}
+    style={{ position: 'fixed', left: position.x, top: position.y, width, zIndex: 60, padding: 4, borderRadius: 8, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }}
     onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
       onKeyDown?.(event);
       if (event.key === 'Escape') { onClose(); onEscape?.(); }

@@ -15,6 +15,13 @@ export interface SelectionContext {
   editGroup(group: TableGroup | null, nodes?: TreeNode[]): void;
   assignGroup(nodes: TreeNode[], target: string | null): void;
   collapseGroups(collapsed: boolean, id?: string): void;
+  draggedGroup: string | null;
+  setDraggedGroup(id: string | null): void;
+  moveGroup(sourceId: string, targetId: string, after: boolean): void;
+  draggedNodes: TreeNode[] | null;
+  setDraggedNodes(nodes: TreeNode[] | null): void;
+  exportGroups(container: string, groupId?: string): void;
+  importGroups(container: string): void;
 }
 export const TableTreeSelectionContext = createContext<SelectionContext | null>(null);
 export function useTableTreeSelection() {

@@ -128,6 +128,31 @@ for (const t of TARGETS) {
       expect(r.steps.some((s) => /SELECT 1/.test(s.name) && s.ok)).toBe(true);
     });
 
+    it.skipIf(t.driver.id !== 'mssql')('connects without specifying a SQL Server database', async () => {
+      const loginDefault = t.driver.connect({ ...profile, database: '' } as ConnectionProfile, secrets);
+      try {
+        expect(loginDefault.defaultContext().database).toBeUndefined();
+        const result = await loginDefault.test();
+        expect(result.ok).toBe(true);
+        const current = await exec(loginDefault, 'SELECT DB_NAME() AS db');
+        expect(typeof current.rows[0][0]).toBe('string');
+        expect((await loginDefault.listChildren(null)).some((node) => node.name === current.rows[0][0])).toBe(true);
+      } finally {
+        await loginDefault.close();
+      }
+    });
+
+    it.skipIf(t.driver.id !== 'mssql')('routes metadata and parameterized queries to the selected database', async () => {
+      const schemas = await conn.listChildren({ kind: 'database', name: database, path: {}, hasChildren: true });
+      expect(schemas.some((node) => node.name === 'dbo')).toBe(true);
+      const cursor = conn.openCursor({ sql: 'SELECT DB_NAME() AS db, @p0 AS value', params: [{ value: 'test' }] }, { database });
+      try {
+        expect((await cursor.fetch(1)).rows[0]).toEqual([database, 'test']);
+      } finally {
+        await cursor.close();
+      }
+    });
+
     it('a wrong password is an auth error that does not reveal the password', async () => {
       const wrong = 'Wr0ng-Secret-xyz';
       const bad = t.driver.connect(profile, { password: wrong });

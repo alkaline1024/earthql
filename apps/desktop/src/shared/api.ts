@@ -1,5 +1,6 @@
 // IPC contract between the renderer (UI) and the main process.
 // Secrets only travel renderer -> main (when the user types them); main never sends them back.
+import type { SaveTableGroupFileResult } from './table-group-transfer';
 import type {
   BrowseRequest,
   BrowseResult,
@@ -187,6 +188,7 @@ export interface EarthQLApi {
     remove(id: string): Promise<void>;
     /** Test a draft profile. Missing secret fields fall back to the values stored for `profile.id`. */
     test(profile: ConnectionProfile, secrets: Secrets): Promise<TestResult>;
+    databases(profile: ConnectionProfile, secrets: Secrets): Promise<TreeNode[]>;
   };
   connection: {
     open(profileId: string): Promise<OpenConnection>;
@@ -215,6 +217,10 @@ export interface EarthQLApi {
     saveFile(sql: string, suggestedName: string): Promise<SaveSqlFileResult>;
     /** Formats already-loaded rows as INSERT statement text, dialect-quoted, for "Copy as INSERT Statement". */
     rowsAsInsert(profileId: string, object: ObjectPath, columns: ResultColumn[], rows: Cell[][]): Promise<string>;
+  };
+  groupFiles: {
+    read(): Promise<string | null>;
+    save(text: string): Promise<SaveTableGroupFileResult>;
   };
   write: {
     previewInsert(profileId: string, spec: InsertSpec): Promise<BuiltStatement>;

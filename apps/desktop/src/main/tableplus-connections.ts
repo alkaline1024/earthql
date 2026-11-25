@@ -8,7 +8,7 @@ type Entry = Record<string, unknown>;
 
 const DRIVERS = { postgres: 'PostgreSQL', mysql: 'MySQL', mssql: 'MicrosoftSQLServer' } as const;
 const PORTS = { postgres: 5432, mysql: 3306, mssql: 1433 } as const;
-const DEFAULT_DATABASE = { postgres: 'postgres', mysql: '', mssql: 'master' } as const;
+const DEFAULT_DATABASE = { postgres: 'postgres', mysql: '', mssql: '' } as const;
 const MAX_ENTRIES = 10_000;
 const PRESET_ENVIRONMENTS = new Map(ENV_PRESETS.map((env) => [env.name.toLowerCase(), env]));
 

@@ -18,11 +18,23 @@ npm run dist:mac     # build apps/desktop/release/EarthQL-<version>-arm64-mac.dm
 Requires Node 20+ and macOS 12+. `dist:mac:universal` builds Apple Silicon + Intel; it needs the x64 optional
 native packages (`@napi-rs/keyring-darwin-x64`, Databricks kernel) installed as well.
 
+For SQL Server, leave Database empty to connect to the login's default database, enter a database, or use **…** to search the databases visible to the login. Azure SQL Database lists databases through `master` and connects to each database separately; database visibility and access depend on the login's permissions.
+
 ## Move connections between EarthQL and TablePlus
 
 - **TablePlus → EarthQL:** Export in TablePlus for macOS with a file password. Select **Include database passwords** to transfer them. In EarthQL, open **Connections → Import**, enter the file password, and choose the `.tableplusconnection` file. EarthQL saves included database passwords to Keychain for new or matching profiles that need a password. `Connections.plist` imports profile settings only.
 - **EarthQL → TablePlus:** Open **Connections → Export**, choose the selected connection or all supported connections, and set a file password. On the TablePlus welcome screen, choose **Import Connection → From File** and use the same password. Enter each database password in TablePlus after import.
 - PostgreSQL, MySQL, and SQL Server profiles transfer. EarthQL imports connections from groups into its flat list, skips duplicate profiles, and skips profiles that require unsupported SSH, socket, or authentication settings. Review TLS settings after transfer when using custom certificates or SQL Server.
+
+## Table filters
+
+Filter rows support AND / OR, IN lists and Raw SQL conditions. Changing AND / OR on an applied row updates the results immediately; other edits require Apply or Apply All. For example, `id IN (1, 2) OR id = 3` matches IDs 1, 2 and 3, while AND matches none.
+
+**Add row** and **Duplicate** append green pending rows directly to the grid. Edit them in place, then **Save** to insert them; **Discard** or deleting a pending row removes it without writing to the database. Identity/generated columns use DEFAULT; duplicated primary keys are reset so manual keys can be entered. DEFAULT and NULL remain distinct from empty text.
+
+With the grid focused, **Copy Rows** (⌘C) followed by **Paste Rows** (⌘V) stages new rows rather than overwriting existing rows. Full-width external TSV can also be pasted as rows; **Paste Cells** and **Paste into selected cells** (⌘⇧V) retain cell-editing behavior. Text editors keep native paste. Copied rows within EarthQL preserve NULL, embedded tabs/newlines and exact numeric strings; copied columns must match the target table. Pending rows participate in unsaved-change protection. On transactional tables, Save applies existing edits and new inserts in one transaction. A failed save retains drafts; an unknown commit outcome blocks retry until Discard and refresh.
+
+Click **SQL** at the left of the filter footer to inspect the executed SQL and bound values for the last submitted filters, sort and page. After a filter error, it shows a rebuilt preview of that request instead. Unapplied edits are excluded. Restart the desktop dev app after changing main-process SQL generation; renderer hot reload alone does not update it.
 
 ## Layout
 

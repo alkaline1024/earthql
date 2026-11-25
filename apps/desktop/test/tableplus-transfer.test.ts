@@ -58,6 +58,16 @@ describe('TablePlus connection transfer', () => {
     expect(importTablePlusProfiles([mysql], [existing, { ...existing, id: 'other' }], { encrypted: true }).passwords.size).toBe(0);
   });
 
+  it('preserves an unspecified SQL Server database and distinguishes it from master', () => {
+    const [loginDefault] = importTablePlusProfiles([{ ...mssql, DatabaseName: '' }], []).profiles;
+    const [master] = importTablePlusProfiles([{ ...mssql, DatabaseName: 'master' }], []).profiles;
+    expect(loginDefault.database).toBe('');
+    expect(importTablePlusProfiles([{ ...mssql, DatabaseName: '' }], [master])).toMatchObject({ duplicates: 0 });
+    const { rows } = exportTablePlusProfiles([loginDefault]);
+    expect(rows[0].DatabaseName).toBe('');
+    expect(importTablePlusProfiles(rows, [loginDefault])).toMatchObject({ profiles: [], duplicates: 1 });
+  });
+
   it('maps product and updates matching legacy production tags without creating duplicates', () => {
     const rows = [{ ...mysql, Enviroment: ' PRODUCT ', statusColor: '#bdccf4' }, { ...mssql, Enviroment: 'production' }];
     const { profiles } = importTablePlusProfiles(rows, []);
