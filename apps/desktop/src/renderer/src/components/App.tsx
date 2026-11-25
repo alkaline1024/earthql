@@ -9,8 +9,20 @@ import { TableTab } from './TableTab';
 import { TabBar } from './TabBar';
 import { ErrorBoundary } from './ErrorBoundary';
 import { FeedbackDialog } from './FeedbackDialog';
+import { SettingsDialog } from './SettingsDialog';
 import { UpdateButton } from './UpdateButton';
 import { Modal } from './common';
+
+function GearIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 16 16" width="13" height="13">
+      <path
+        fill="currentColor"
+        d="M6.4 1.2h3.2l.5 1.9c.4.15.78.35 1.13.58l1.87-.63 1.6 2.77-1.46 1.3a5 5 0 0 1 0 1.3l1.46 1.3-1.6 2.77-1.87-.63c-.35.23-.73.43-1.13.58l-.5 1.9H6.4l-.5-1.9a4.9 4.9 0 0 1-1.13-.58l-1.87.63-1.6-2.77 1.46-1.3a5 5 0 0 1 0-1.3L1.3 5.14l1.6-2.77 1.87.63c.35-.23.73-.43 1.13-.58zM8 10.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5"
+      />
+    </svg>
+  );
+}
 
 export function App() {
   const { screen, tabs, activeTabId, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
@@ -18,6 +30,7 @@ export function App() {
   const profiles = useApp((s) => s.profiles);
   const [newRequested, setNewRequested] = useState(0);
   const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const feedbackOpen = useRef(false);
 
   const openFeedback = useCallback(() => {
@@ -47,6 +60,7 @@ export function App() {
           }
         }
         if (cmd === 'send-feedback') openFeedback();
+        if (cmd === 'open-settings') setSettingsOpen(true);
         const s = useApp.getState();
         if (cmd === 'new-connection') {
           s.setScreen('connections');
@@ -107,6 +121,9 @@ export function App() {
       </div>
       <footer className="app-footer">
         <UpdateButton />
+        <button className="btn small ghost no-drag" aria-keyshortcuts="Meta+," onClick={() => setSettingsOpen(true)}>
+          <GearIcon /> Settings
+        </button>
         <span className="spacer" />
         <button className="btn small no-drag" onClick={openFeedback}>Send Feedback</button>
       </footer>
@@ -128,6 +145,7 @@ export function App() {
         </Modal>
       )}
       {feedback && <FeedbackDialog screenshot={feedback.screenshot} onClose={() => { feedbackOpen.current = false; setFeedback(null); }} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       <span hidden>{profiles.length}</span>
     </div>
   );

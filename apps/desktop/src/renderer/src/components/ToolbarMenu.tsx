@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
+function ChevronDown() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 10 6" width="9" height="6" className="toolbar-chevron">
+      <path d="M1 1l4 3.2L9 1" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 /** Open state + click-outside/Escape dismissal for a menu anchored under a toolbar button. */
 function useAnchoredMenu() {
   const [open, setOpen] = useState(false);
@@ -43,7 +51,7 @@ export function ToolbarDropdown({
     <div className="toolbar-dropdown no-drag" ref={root}>
       <button type="button" className="btn small" title={title} disabled={disabled} onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open}>
         {trigger}
-        <span aria-hidden="true" className="toolbar-dropdown-caret">⌄</span>
+        <ChevronDown />
       </button>
       {open && (
         <div className={`toolbar-menu${align === 'right' ? ' align-right' : ''}`} role="menu">
@@ -91,7 +99,7 @@ export function SplitButton({
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
       >
-        ⌄
+        <ChevronDown />
       </button>
       {open && (
         <div className={`toolbar-menu${align === 'right' ? ' align-right' : ''}`} role="menu" aria-label={menuLabel}>

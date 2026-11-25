@@ -73,7 +73,7 @@ export function categoryTitle(c: ErrorCategory): string {
   return CATEGORY_TITLE[c] ?? 'Error';
 }
 
-export function ErrorView({ error, actions, compact }: { error: ErrorInfo; actions?: ReactNode; compact?: boolean }) {
+export function ErrorView({ error, actions, compact, onDismiss }: { error: ErrorInfo; actions?: ReactNode; compact?: boolean; onDismiss?: () => void }) {
   const tone = error.category === 'cancelled' ? 'info' : error.category === 'outcome_unknown' || error.category === 'permission' ? 'warn' : '';
   return (
     <div className={`errbox ${tone}`}>
@@ -85,6 +85,11 @@ export function ErrorView({ error, actions, compact }: { error: ErrorInfo; actio
         {error.code && <div className="e-code">Code: {error.code}</div>}
         {actions && <div className="row" style={{ marginTop: 8 }}>{actions}</div>}
       </div>
+      {onDismiss && (
+        <button type="button" className="btn ghost icon e-dismiss" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}>
+          ✕
+        </button>
+      )}
     </div>
   );
 }

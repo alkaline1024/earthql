@@ -40,8 +40,15 @@
   --titlebar: 52px;
 }
 
+/*
+ * Theme switching: the base :root block above is "Light". A manual theme is applied via
+ * <html data-theme="...">  (see store.ts applyTheme()); when no data-theme is set at all
+ * ("System"), the OS preference decides between Light and Dark via the media query below.
+ * "Dark" duplicates the same values as a standalone, always-on block so it can be chosen
+ * explicitly regardless of the OS setting — keep the two in sync.
+ */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme]) {
     --primary: #85bda3;
     --on-primary: #15271e;
     --primary-soft: rgba(133, 189, 163, 0.1);
@@ -79,6 +86,113 @@
     --cm-type: #96b8c3;
     --cm-quoted: #c4ba8b;
   }
+}
+
+:root[data-theme="dark"] {
+  --primary: #85bda3;
+  --on-primary: #15271e;
+  --primary-soft: rgba(133, 189, 163, 0.1);
+  --secondary: #a0b5a9;
+  --on-secondary: #1c2922;
+  --secondary-soft: #2c3831;
+  --bg: #202723;
+  --bg-sunken: #1a211d;
+  --bg-raised: #29322c;
+  --sidebar: rgba(28, 36, 30, 0.9);
+  --line: rgba(179, 216, 194, 0.1);
+  --line-strong: rgba(179, 216, 194, 0.22);
+  --text: #dce4dd;
+  --text-2: #adbab0;
+  --text-3: #8e9e93;
+  --accent: var(--primary);
+  --accent-soft: var(--primary-soft);
+  --hover: rgba(179, 216, 194, 0.07);
+  --selected: rgba(133, 189, 163, 0.14);
+  --ok: #8abb9a;
+  --warn: #d4b074;
+  --unsaved: #d5b86b;
+  --unsaved-soft: rgba(213, 184, 107, 0.14);
+  --danger: #e39a92;
+  --on-danger: #321b18;
+  --danger-soft: rgba(227, 154, 146, 0.12);
+  --warn-soft: rgba(212, 176, 116, 0.12);
+  --ok-soft: rgba(138, 187, 154, 0.1);
+  --null: #6e6e76;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.5), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  --cm-keyword: #bca5ce;
+  --cm-string: #9fbd9f;
+  --cm-number: #cbb091;
+  --cm-type: #96b8c3;
+  --cm-quoted: #c4ba8b;
+}
+
+/* Crisp and neutral, for readers who find the Light theme's green tint too warm. */
+:root[data-theme="white"] {
+  --primary: #2f6fed;
+  --on-primary: #ffffff;
+  --primary-soft: rgba(47, 111, 237, 0.08);
+  --secondary: #4b5565;
+  --on-secondary: #ffffff;
+  --secondary-soft: #eef0f3;
+  --bg: #ffffff;
+  --bg-sunken: #f3f4f6;
+  --bg-raised: #ffffff;
+  --sidebar: rgba(243, 244, 246, 0.9);
+  --line: rgba(20, 24, 32, 0.08);
+  --line-strong: rgba(20, 24, 32, 0.16);
+  --text: #1a1d23;
+  --text-2: #585f6b;
+  --text-3: #6b7280;
+  --accent: var(--primary);
+  --accent-soft: var(--primary-soft);
+  --hover: rgba(20, 24, 32, 0.04);
+  --selected: rgba(47, 111, 237, 0.12);
+}
+
+/* Cool blue-gray, a calmer developer-tool feel. */
+:root[data-theme="slate"] {
+  --primary: #5b6ee8;
+  --on-primary: #ffffff;
+  --primary-soft: rgba(91, 110, 232, 0.1);
+  --secondary: #5b6472;
+  --on-secondary: #ffffff;
+  --secondary-soft: #e4e7ef;
+  --bg: #eef0f5;
+  --bg-sunken: #e2e5ed;
+  --bg-raised: #f8f9fc;
+  --sidebar: rgba(226, 229, 237, 0.88);
+  --line: rgba(38, 43, 56, 0.1);
+  --line-strong: rgba(38, 43, 56, 0.2);
+  --text: #262b38;
+  --text-2: #565d6e;
+  --text-3: #6b7284;
+  --accent: var(--primary);
+  --accent-soft: var(--primary-soft);
+  --hover: rgba(38, 43, 56, 0.05);
+  --selected: rgba(91, 110, 232, 0.14);
+}
+
+/* Warm and paper-like — easier on the eyes for long SQL sessions. */
+:root[data-theme="sepia"] {
+  --primary: #9c6b2e;
+  --on-primary: #ffffff;
+  --primary-soft: rgba(156, 107, 46, 0.1);
+  --secondary: #7a6a52;
+  --on-secondary: #ffffff;
+  --secondary-soft: #ede1cd;
+  --bg: #f6efe2;
+  --bg-sunken: #ede3cf;
+  --bg-raised: #fbf6ec;
+  --sidebar: rgba(237, 227, 207, 0.88);
+  --line: rgba(58, 47, 34, 0.12);
+  --line-strong: rgba(58, 47, 34, 0.22);
+  --text: #3a2f22;
+  --text-2: #6b5c47;
+  --text-3: #80715c;
+  --accent: var(--primary);
+  --accent-soft: var(--primary-soft);
+  --hover: rgba(58, 47, 34, 0.06);
+  --selected: rgba(156, 107, 46, 0.14);
 }
 
 * {
@@ -593,6 +707,67 @@ label.check {
 .tab-group-swatch[aria-checked="true"] {
   border-color: var(--text);
 }
+
+/* ---------- theme picker (Settings) ---------- */
+
+.theme-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.theme-swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px;
+  border: 2px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  cursor: default;
+}
+.theme-swatch-preview {
+  height: 44px;
+  border-radius: 8px;
+  background: var(--swatch-bg);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  position: relative;
+  overflow: hidden;
+}
+.theme-swatch-preview::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--swatch-primary);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+}
+.theme-swatch-preview.split::after {
+  content: none;
+}
+.settings-h {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+.theme-swatch-label {
+  font-size: 11.5px;
+  color: var(--text-2);
+  text-align: center;
+}
+.theme-swatch:hover .theme-swatch-preview {
+  outline: 1px solid var(--line-strong);
+}
+.theme-swatch.on {
+  border-color: var(--accent);
+}
+.theme-swatch.on .theme-swatch-label {
+  color: var(--text);
+  font-weight: 600;
+}
 .tab {
   position: relative;
   display: flex;
@@ -1002,6 +1177,11 @@ label.check {
   flex-wrap: wrap;
   min-height: 38px;
 }
+/* The SQL tab's run/limit/beautify toolbar sits below the editor, not above it. */
+.sql-split > .toolbar {
+  border-bottom: none;
+  border-top: 1px solid var(--line);
+}
 .statusbar {
   display: flex;
   align-items: center;
@@ -1155,6 +1335,12 @@ label.check {
   color: var(--text-3);
   font-size: 11px;
   margin-top: 4px;
+}
+.errbox .e-dismiss {
+  flex-shrink: 0;
+  align-self: flex-start;
+  width: 22px;
+  height: 22px;
 }
 
 .spinner {
@@ -1843,10 +2029,10 @@ table.list td.mono {
   position: relative;
   display: inline-flex;
 }
-.toolbar-dropdown-caret {
-  margin-left: 2px;
-  font-size: 10px;
-  opacity: 0.7;
+.toolbar-chevron {
+  margin-left: 3px;
+  flex-shrink: 0;
+  opacity: 0.6;
 }
 .split-btn > .btn {
   border-radius: 0;
@@ -1861,7 +2047,11 @@ table.list td.mono {
   margin-left: -1px;
   border-top-right-radius: 6px !important;
   border-bottom-right-radius: 6px !important;
-  font-size: 10px;
+  display: grid;
+  place-items: center;
+}
+.split-btn-chevron .toolbar-chevron {
+  margin-left: 0;
 }
 .toolbar-menu {
   position: absolute;

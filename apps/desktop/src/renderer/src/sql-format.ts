@@ -9,6 +9,6 @@ const DIALECT: Record<DriverId, SqlLanguage> = {
 };
 
 /** Pretty-prints SQL for a given driver's dialect. Throws on unparsable input — callers should catch it. */
-export function formatSql(sql: string, driver: DriverId): string {
-  return format(sql, { language: DIALECT[driver], keywordCase: 'upper' });
+export function formatSql(sql: string, driver: DriverId, uppercaseKeywords = true): string {
+  return format(sql, { language: DIALECT[driver], keywordCase: uppercaseKeywords ? 'upper' : 'preserve' });
 }

@@ -18,6 +18,13 @@ export type Tab = { customTitle?: string; refreshVersion?: number } & (
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 export type NewTab = DistributiveOmit<Tab, 'id'> & { id?: string };
 
+/** A practical "no cap" sentinel: the SQL itself is never rewritten, this just stops the client
+ *  from capping how many rows it pulls from the (already streaming) cursor. */
+export const NO_LIMIT = Number.MAX_SAFE_INTEGER;
+export const LIMITS = [100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
+
+export type Theme = 'system' | 'light' | 'dark' | 'white' | 'slate' | 'sepia';
+
 export interface Toast {
   id: string;
   kind: 'ok' | 'error' | 'info';
@@ -48,6 +55,15 @@ interface AppState {
   /** Which action the SQL toolbar's Run button performs by default (persisted, app-wide). */
   sqlRunDefault: 'current' | 'all';
   setSqlRunDefault(mode: 'current' | 'all'): void;
+  /** Row limit a newly opened SQL tab starts with (persisted). */
+  defaultRowLimit: number;
+  setDefaultRowLimit(limit: number): void;
+  /** Whether Beautify upper-cases SQL keywords (persisted). */
+  beautifyUppercase: boolean;
+  setBeautifyUppercase(uppercase: boolean): void;
+  /** Color theme (persisted; 'system' follows the OS). */
+  theme: Theme;
+  setTheme(theme: Theme): void;
   discardPrompt: { resolve: (discard: boolean) => void } | null;
   confirmDiscard(): Promise<boolean>;
   resolveDiscard(discard: boolean): void;
@@ -89,6 +105,45 @@ function loadSqlRunDefault(): 'current' | 'all' {
     return localStorage.getItem('earthql.sqlRunDefault') === 'all' ? 'all' : 'current';
   } catch {
     return 'current';
+  }
+}
+
+function loadDefaultRowLimit(): number {
+  try {
+    const raw = localStorage.getItem('earthql.defaultRowLimit');
+    const n = raw ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 1000;
+  } catch {
+    return 1000;
+  }
+}
+
+function loadBeautifyUppercase(): boolean {
+  try {
+    return localStorage.getItem('earthql.beautifyUppercase') !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+const THEMES: Theme[] = ['system', 'light', 'dark', 'white', 'slate', 'sepia'];
+
+function loadTheme(): Theme {
+  try {
+    const raw = localStorage.getItem('earthql.theme');
+    return (THEMES as string[]).includes(raw ?? '') ? (raw as Theme) : 'system';
+  } catch {
+    return 'system';
+  }
+}
+
+/** Reflects the chosen theme onto <html data-theme="..."> so CSS can key off it; 'system' removes the attribute. */
+function applyTheme(theme: Theme) {
+  try {
+    if (theme === 'system') document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.dataset.theme = theme;
+  } catch {
+    // No DOM available (e.g. under test) — the preference is still stored.
   }
 }
 
@@ -141,6 +196,9 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
   };
 }
 
+const initialTheme = loadTheme();
+applyTheme(initialTheme);
+
 export const useApp = create<AppState>((set, get) => ({
   profiles: [],
   connections: {},
@@ -163,6 +221,34 @@ export const useApp = create<AppState>((set, get) => ({
       get().toast('error', 'Default run action could not be saved.');
     }
     set({ sqlRunDefault: mode });
+  },
+  defaultRowLimit: loadDefaultRowLimit(),
+  setDefaultRowLimit(limit) {
+    try {
+      localStorage.setItem('earthql.defaultRowLimit', String(limit));
+    } catch {
+      get().toast('error', 'Default row limit could not be saved.');
+    }
+    set({ defaultRowLimit: limit });
+  },
+  beautifyUppercase: loadBeautifyUppercase(),
+  setBeautifyUppercase(uppercase) {
+    try {
+      localStorage.setItem('earthql.beautifyUppercase', String(uppercase));
+    } catch {
+      get().toast('error', 'Preference could not be saved.');
+    }
+    set({ beautifyUppercase: uppercase });
+  },
+  theme: initialTheme,
+  setTheme(theme) {
+    try {
+      localStorage.setItem('earthql.theme', theme);
+    } catch {
+      get().toast('error', 'Theme could not be saved.');
+    }
+    applyTheme(theme);
+    set({ theme });
   },
   discardPrompt: null,
   confirmDiscard() {
