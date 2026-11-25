@@ -525,6 +525,35 @@ class MysqlConnection implements DriverConnection {
     return new Promise((resolve, reject) => this.pool().getConnection((err, c) => (err ? reject(err) : resolve(c))));
   }
 
+  async executeTableStatements(object: ObjectPath, statements: string[], options: { disableForeignKeys: boolean; cleanupSql?: string }): Promise<void> {
+    const connection = await this.acquire();
+    const client = connection.promise();
+    let discard = false;
+    let originalForeignKeys: number | undefined;
+    let completed = 0;
+    try {
+      await client.query(`USE ${this.dialect.quoteIdent(this.db(object))}`);
+      if (options.disableForeignKeys) {
+        const [rows] = await client.query<mysql.RowDataPacket[]>('SELECT @@SESSION.foreign_key_checks AS fk');
+        originalForeignKeys = Number(rows[0].fk);
+        await client.query('SET SESSION FOREIGN_KEY_CHECKS = 0');
+      }
+      for (const statement of statements) { await client.query(statement); completed++; }
+    } catch (error) {
+      if (completed > 0 && options.cleanupSql) {
+        try { await client.query(options.cleanupSql); }
+        catch { discard = true; connection.destroy(); throw makeError('outcome_unknown', 'Cloning failed and the new table could not be cleaned up. Refresh the schema before retrying.'); }
+      }
+      throw error;
+    } finally {
+      if (originalForeignKeys !== undefined && !discard) {
+        try { await client.query(`SET SESSION FOREIGN_KEY_CHECKS = ${originalForeignKeys === 0 ? 0 : 1}`); }
+        catch { discard = true; connection.destroy(); }
+      }
+      if (!discard) connection.release();
+    }
+  }
+
   async applyGridUpdates(object: ObjectPath, statements: StatementInput[]): Promise<void> {
     const db = this.db(object);
     const connection = await this.acquire();

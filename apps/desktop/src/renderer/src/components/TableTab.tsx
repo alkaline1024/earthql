@@ -48,6 +48,7 @@ export function TableTab({
   objectKind,
   initialView,
   active,
+  refreshVersion = 0,
 }: {
   tabId: string;
   profileId: string;
@@ -55,8 +56,11 @@ export function TableTab({
   objectKind: ObjectKind;
   initialView?: 'data' | 'structure';
   active: boolean;
+  refreshVersion?: number;
 }) {
-  const [view, setView] = useState<'data' | 'structure'>(initialView ?? 'data');
+  const view = initialView ?? 'data';
+  const setTableView = useApp((s) => s.setTableView);
+  const setView = (next: 'data' | 'structure') => setTableView(tabId, next);
   const [structure, setStructure] = useState<TableStructure | null>(null);
   const [structureErr, setStructureErr] = useState<ErrorInfo | null>(null);
   const [privileges, setPrivileges] = useState<ObjectPrivileges | null>(null);
@@ -85,6 +89,11 @@ export function TableTab({
       .then(setPrivileges)
       .catch(() => setPrivileges({ select: 'unknown', insert: 'unknown' }));
   }, [loadStructure, profileId, object]);
+
+  const structureRefresh = view === 'structure' ? refreshVersion : 0;
+  useEffect(() => {
+    if (structureRefresh) void loadStructure(true);
+  }, [loadStructure, structureRefresh]);
 
   if (!conn || !profile) return <StateView title="Not connected" />;
 
@@ -119,6 +128,7 @@ export function TableTab({
           insertUnknown={privileges?.insert === 'unknown'}
           editBlocked={privileges?.update === 'no' ? 'This account has no UPDATE privilege on this table.' : null}
           active={active}
+          refreshVersion={refreshVersion}
           onInserted={() => setDataVersion((v) => v + 1)}
         />
       ) : (
@@ -137,6 +147,7 @@ function DataView({
   insertUnknown,
   editBlocked,
   active,
+  refreshVersion,
   onInserted,
 }: {
   tabId: string;
@@ -147,6 +158,7 @@ function DataView({
   insertUnknown: boolean;
   editBlocked: string | null;
   active: boolean;
+  refreshVersion: number;
   onInserted: () => void;
 }) {
   const [filters, setFilters] = useState<Filter[]>([]);
@@ -230,16 +242,15 @@ function DataView({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, refreshVersion]);
 
   useEffect(() => {
     if (!active) return;
     const off = window.earthqlBridge.on('menu:command', (cmd) => {
-      if (cmd === 'refresh' && !saving) void load();
       if (cmd === 'save') void saveChanges();
     });
     return off;
-  }, [active, load, saveChanges, saving]);
+  }, [active, saveChanges]);
 
   const gridColumns = useMemo(() => result?.columns.map(({ name }) => structure?.columns.find((column) => column.name === name)) ?? [], [result, structure]);
   const gridEditing: GridEditing = {

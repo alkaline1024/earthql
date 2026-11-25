@@ -543,6 +543,20 @@ class PostgresConnection implements DriverConnection {
     return this.pool(database).connect();
   }
 
+  async executeTableStatements(object: ObjectPath, statements: string[], options: { disableForeignKeys: boolean }): Promise<void> {
+    if (options.disableForeignKeys) throw new Error('PostgreSQL uses CASCADE rather than disabling foreign key checks.');
+    const client = await this.acquire(object.database);
+    let discard = false;
+    try {
+      await client.query('BEGIN');
+      for (const statement of statements) await client.query(statement);
+      await client.query('COMMIT');
+    } catch (error) {
+      try { await client.query('ROLLBACK'); } catch { discard = true; }
+      throw error;
+    } finally { client.release(discard); }
+  }
+
   async applyGridUpdates(object: ObjectPath, statements: StatementInput[]): Promise<void> {
     const client = await this.acquire(object.database);
     let discard = false;

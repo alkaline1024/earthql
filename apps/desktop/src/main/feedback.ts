@@ -51,12 +51,21 @@ export function saveFeedbackSettings(url: string, key: string): FeedbackSettings
 }
 
 export async function captureFeedbackScreenshot(contents: WebContents): Promise<string> {
-  let image = await contents.capturePage();
-  const { width, height } = image.getSize();
-  const ratio = Math.min(1, 1600 / Math.max(width, height));
-  if (image.isEmpty()) throw new Error('The app window could not be captured.');
-  if (ratio < 1) image = image.resize({ width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)) });
-  return JPEG_PREFIX + image.toJPEG(85).toString('base64');
+  // macOS vibrancy is composited outside the web page. Give capturePage an
+  // opaque, theme-aware backing so JPEG encoding cannot turn it black.
+  const background = await contents.insertCSS('html { background: var(--bg, #f5f6f3) !important; }');
+  try {
+    // Allow the opaque backing to reach the compositor before capturing.
+    await contents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    let image = await contents.capturePage();
+    if (image.isEmpty()) throw new Error('The app window could not be captured.');
+    const { width, height } = image.getSize();
+    const ratio = Math.min(1, 1600 / Math.max(width, height));
+    if (ratio < 1) image = image.resize({ width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)) });
+    return JPEG_PREFIX + image.toJPEG(85).toString('base64');
+  } finally {
+    await contents.removeInsertedCSS(background);
+  }
 }
 
 function screenshotBytes(screenshot: string | undefined): string | undefined {

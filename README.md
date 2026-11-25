@@ -18,6 +18,12 @@ npm run dist:mac     # build apps/desktop/release/EarthQL-<version>-arm64-mac.dm
 Requires Node 20+ and macOS 12+. `dist:mac:universal` builds Apple Silicon + Intel; it needs the x64 optional
 native packages (`@napi-rs/keyring-darwin-x64`, Databricks kernel) installed as well.
 
+## Move connections between EarthQL and TablePlus
+
+- **TablePlus → EarthQL:** Export in TablePlus for macOS with a file password. Select **Include database passwords** to transfer them. In EarthQL, open **Connections → Import**, enter the file password, and choose the `.tableplusconnection` file. EarthQL saves included database passwords to Keychain for new or matching profiles that need a password. `Connections.plist` imports profile settings only.
+- **EarthQL → TablePlus:** Open **Connections → Export**, choose the selected connection or all supported connections, and set a file password. On the TablePlus welcome screen, choose **Import Connection → From File** and use the same password. Enter each database password in TablePlus after import.
+- PostgreSQL, MySQL, and SQL Server profiles transfer. EarthQL imports connections from groups into its flat list, skips duplicate profiles, and skips profiles that require unsupported SSH, socket, or authentication settings. Review TLS settings after transfer when using custom certificates or SQL Server.
+
 ## Layout
 
 | Package | Role |

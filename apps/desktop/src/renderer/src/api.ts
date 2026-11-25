@@ -22,15 +22,25 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
 
 export const api: EarthQLApi = {
   platform: bridge.platform,
+  updates: {
+    status: () => call('updates:status'),
+    install: () => call('updates:install'),
+    onStatus: (cb) => bridge.on('updates:status', cb as any),
+  },
   profiles: {
     list: () => call('profiles:list'),
+    importTablePlus: (password) => call('profiles:importTablePlus', password),
+    exportTablePlus: (profileId, password) => call('profiles:exportTablePlus', profileId, password),
     save: (p, s) => call('profiles:save', p, s),
     remove: (id) => call('profiles:remove', id),
     test: (p, s) => call('profiles:test', p, s),
   },
   connection: {
     open: (id) => call('connection:open', id),
+    openSeparate: (id, name) => call('connection:openSeparate', id, name),
+    reconnect: (id) => call('connection:reconnect', id),
     close: (id) => call('connection:close', id),
+    closeProfile: (id) => call('connection:closeProfile', id),
   },
   meta: {
     children: (id, node) => call('meta:children', id, node),
@@ -61,6 +71,14 @@ export const api: EarthQLApi = {
     list: (id) => call('saved:list', id),
     save: (id, q) => call('saved:save', id, q),
     remove: (id, qid) => call('saved:remove', id, qid),
+  },
+  tableActions: { run: (profileId, request) => call('tableActions:run', profileId, request) },
+  tableFiles: {
+    export: (id, profileId, items, options) => call('tableFiles:export', id, profileId, items, options),
+    read: (profileId, object, format, options) => call('tableFiles:read', profileId, object, format, options),
+    import: (token, mapping, emptyAsNull) => call('tableFiles:import', token, mapping, emptyAsNull),
+    release: (token) => call('tableFiles:release', token),
+    cancel: (id) => call('tableFiles:cancel', id),
   },
   exports: {
     run: (exportId, scope, opts) => call('export:run', exportId, scope, opts),

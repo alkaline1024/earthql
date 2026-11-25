@@ -6,6 +6,9 @@ import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
 import { SessionManager } from './sessions';
+import { executeTableAction } from './table-actions';
+import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob } from './table-files';
+import { exportConnections, importConnections } from './connection-transfer';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
 import { clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
 
@@ -30,6 +33,8 @@ export function registerIpc(sessions: SessionManager): void {
   const summary = (p: ConnectionProfile): ProfileSummary => ({ profile: p, storedSecrets: storedFields(p.id) });
 
   handle('profiles:list', null, () => loadProfiles().map(summary));
+  handle('profiles:importTablePlus', null, importConnections);
+  handle('profiles:exportTablePlus', null, exportConnections);
 
   handle('profiles:save', null, (profile: ConnectionProfile, secrets: Secrets) => {
     const list = loadProfiles();
@@ -50,7 +55,7 @@ export function registerIpc(sessions: SessionManager): void {
   });
 
   handle('profiles:remove', null, async (id: string) => {
-    await sessions.close(id);
+    await sessions.closeProfile(id);
     saveProfiles(loadProfiles().filter((p) => p.id !== id));
     deleteAllSecrets(id);
     deleteProfileData(id);
@@ -72,7 +77,10 @@ export function registerIpc(sessions: SessionManager): void {
 
   // --- connections / metadata ----------------------------------------------
   handle('connection:open', 0, (profileId: string) => sessions.open(profileId));
-  handle('connection:close', 0, (profileId: string) => sessions.close(profileId));
+  handle('connection:openSeparate', 0, (sessionId: string, name: string) => sessions.openSeparate(sessionId, name));
+  handle('connection:reconnect', 0, (sessionId: string) => sessions.reconnect(sessionId));
+  handle('connection:close', 0, (sessionId: string) => sessions.close(sessionId));
+  handle('connection:closeProfile', 0, (profileId: string) => sessions.closeProfile(profileId));
   handle('meta:children', 0, (profileId: string, node) => sessions.get(profileId).conn.listChildren(node as any));
   handle('meta:structure', 0, (profileId: string, object, refresh?: boolean) => sessions.structure(profileId, object as any, !!refresh));
   handle('meta:privileges', 0, (profileId: string, object) => sessions.get(profileId).conn.getPrivileges(object as any));
@@ -93,10 +101,11 @@ export function registerIpc(sessions: SessionManager): void {
   handle('write:create', 0, (profileId: string, spec) => sessions.create(profileId, spec as any));
 
   // --- history / saved --------------------------------------------------------
-  handle('history:list', 0, (profileId: string) => loadHistory(profileId));
-  handle('history:clear', 0, (profileId: string) => clearHistory(profileId));
-  handle('saved:list', 0, (profileId: string) => loadSaved(profileId));
-  handle('saved:save', 0, (profileId: string, q: SavedQuery) => {
+  handle('history:list', 0, (sessionId: string) => loadHistory(sessions.savedProfileId(sessionId)));
+  handle('history:clear', 0, (sessionId: string) => clearHistory(sessions.savedProfileId(sessionId)));
+  handle('saved:list', 0, (sessionId: string) => loadSaved(sessions.savedProfileId(sessionId)));
+  handle('saved:save', 0, (sessionId: string, q: SavedQuery) => {
+    const profileId = sessions.savedProfileId(sessionId);
     const list = loadSaved(profileId);
     const now = Date.now();
     const id = q.id || randomUUID();
@@ -107,7 +116,17 @@ export function registerIpc(sessions: SessionManager): void {
     writeSaved(profileId, list);
     return item;
   });
-  handle('saved:remove', 0, (profileId: string, id: string) => writeSaved(profileId, loadSaved(profileId).filter((x) => x.id !== id)));
+  handle('saved:remove', 0, (sessionId: string, id: string) => {
+    const profileId = sessions.savedProfileId(sessionId);
+    writeSaved(profileId, loadSaved(profileId).filter((x) => x.id !== id));
+  });
+
+  handle('tableActions:run', 0, (profileId: string, request) => executeTableAction(sessions, profileId, request as any));
+  handle('tableFiles:export', 1, (id: string, profileId: string, items, options) => exportTables(sessions, id, profileId, items as any, options as any));
+  handle('tableFiles:read', 0, (profileId: string, object, format, options) => readTableImport(sessions, profileId, object as any, format as any, options as any));
+  handle('tableFiles:import', null, (token: string, mapping, emptyAsNull: boolean) => importTable(sessions, token, mapping as any, emptyAsNull));
+  handle('tableFiles:release', null, (token: string) => releaseTableImport(token));
+  handle('tableFiles:cancel', null, (id: string) => cancelTableFileJob(id, sessions));
 
   // --- export -----------------------------------------------------------------
   handle('export:run', null, async (exportId: string, scope, opts) => {

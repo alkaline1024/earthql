@@ -559,6 +559,20 @@ class MssqlConnection implements DriverConnection {
     }
   }
 
+  async executeTableStatements(object: ObjectPath, statements: string[], options: { disableForeignKeys: boolean }): Promise<void> {
+    if (options.disableForeignKeys) throw makeError('unsupported', 'SQL Server cannot truncate a referenced table by disabling foreign key checks.');
+    const transaction = new sql.Transaction(await this.pool());
+    await transaction.begin();
+    try {
+      if (object.database) await transaction.request().batch(`USE ${this.dialect.quoteIdent(object.database)}`);
+      for (const statement of statements) await transaction.request().batch(statement);
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback().catch(() => undefined);
+      throw error;
+    }
+  }
+
   async applyGridUpdates(_object: ObjectPath, statements: StatementInput[]): Promise<void> {
     const transaction = new sql.Transaction(await this.pool());
     await executeAtomicGridUpdates(statements, {

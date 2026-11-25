@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { profileOf, useApp } from '../store';
+import { connectionName, profileOf, useApp } from '../store';
 import { DriverIcon, EnvBadge } from './common';
 
 /** Shows, for every tab, which connection (and environment) and which target it works against. */
@@ -14,7 +14,7 @@ export function ContextBar({ profileId, target, kindLabel, children }: { profile
       <div className="ctxbar">
         <DriverIcon driver={p.driver} size={16} />
         <div className="crumbs">
-          <b>{p.name}</b>
+          <b>{connectionName(profileId)}</b>
           <EnvBadge env={p.env} />
           <span className="sep">›</span>
           {kindLabel && <span className="muted">{kindLabel}</span>}
@@ -28,7 +28,7 @@ export function ContextBar({ profileId, target, kindLabel, children }: { profile
       {lost && (
         <div className="banner">
           <span>⚡︎</span>
-          <span className="grow">The connection to {p.name} was lost. Results shown may be out of date.</span>
+          <span className="grow">The connection to {connectionName(profileId)} was lost. Results shown may be out of date.</span>
           <button className="btn small" onClick={() => void connect(profileId)}>
             Reconnect
           </button>

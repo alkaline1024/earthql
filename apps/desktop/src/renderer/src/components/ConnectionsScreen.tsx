@@ -1,25 +1,22 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent } from 'react';
 import {
   DRIVER_LABELS,
   secretFieldsFor,
   type ConnectionProfile,
   type DriverId,
-  type EnvironmentTag,
+  type ErrorInfo,
   type SecretField,
   type Secrets,
   type TestResult,
   type TlsMode,
 } from '@earthql/core';
-import { api, errorInfo, uid } from '../api';
+import { createPortal } from 'react-dom';
+import { api, errorInfo, onMenuCommand, uid } from '../api';
+import { ENV_PRESETS } from '../../../shared/environments';
 import { useApp } from '../store';
-import { DRIVER_META, DriverIcon, EnvBadge, ErrorView, Spinner, formatDuration } from './common';
-
-const ENV_PRESETS: EnvironmentTag[] = [
-  { name: 'Development', color: '#2f9e5b' },
-  { name: 'Staging', color: '#d48806' },
-  { name: 'Production', color: '#e5484d' },
-  { name: 'Local', color: '#6e56cf' },
-];
+import { ContextSubmenu as ConnectionMenuBranch } from './ContextSubmenu';
+import { assignConnectionGroup, parseConnectionGroups, type ConnectionGroup } from '../connection-groups';
+import { DRIVER_META, DriverIcon, EnvBadge, ErrorView, Modal, Spinner, formatDuration } from './common';
 
 const DEFAULT_PORTS: Record<DriverId, number> = { postgres: 5432, mysql: 3306, mssql: 1433, databricks: 443 };
 
@@ -43,10 +40,76 @@ function describe(p: ConnectionProfile): string {
 }
 
 export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
-  const { profiles, loadProfiles, connections, connecting, connectErrors, connect, setScreen } = useApp();
+  const { profiles, loadProfiles, connections, connecting, connectErrors, connect, setScreen, moveProfile, disconnectProfile, toast } = useApp();
+  const connectedProfiles = new Set(Object.values(connections).map(({ profileId }) => profileId));
+  const connectingProfiles = new Set(Object.entries(connecting).flatMap(([id, busy]) => busy ? [connections[id]?.profileId ?? id] : []));
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const anchor = useRef<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; groupId?: string } | null>(null);
+  const [groups, setGroups] = useState<ConnectionGroup[]>(() => {
+    try { return parseConnectionGroups(localStorage.getItem('earthql.connectionGroups')); } catch { return []; }
+  });
+  const [groupEditor, setGroupEditor] = useState<{ id?: string; name: string; ids: string[] } | null>(null);
+  const [groupError, setGroupError] = useState('');
+  const [dragGroup, setDragGroup] = useState<string | null>(null);
+  const newConnectionGroup = useRef<string | null>(null);
+  const [exportIds, setExportIds] = useState<string[] | null>(null);
+  const groupedIds = new Set(groups.flatMap((group) => group.profileIds));
+  const sections = [
+    ...groups.map((group) => ({ group, items: profiles.filter(({ profile }) => group.profileIds.includes(profile.id)) })),
+    { group: null, items: profiles.filter(({ profile }) => !groupedIds.has(profile.id)) },
+  ];
+  const visibleProfiles = sections.flatMap(({ group, items }) => group?.collapsed ? [] : items);
+
+  function saveGroups(next: ConnectionGroup[]) {
+    try {
+      localStorage.setItem('earthql.connectionGroups', JSON.stringify(next));
+      setGroups(next);
+      return true;
+    } catch { toast('error', 'Connection groups could not be saved.'); return false; }
+  }
+
+  function moveToGroup(ids: string[], groupId: string | null) {
+    return saveGroups(assignConnectionGroup(groups, ids, groupId));
+  }
+
+  function editGroup(group?: ConnectionGroup) {
+    setMenu(null);
+    setGroupError('');
+    setGroupEditor({ id: group?.id, name: group?.name ?? '', ids: group ? [] : [...selectedIds] });
+  }
+
+  function saveGroup(event: FormEvent) {
+    event.preventDefault();
+    if (!groupEditor) return;
+    const name = groupEditor.name.trim();
+    if (!name) { setGroupError('Enter a group name.'); return; }
+    if (groups.some((group) => group.id !== groupEditor.id && group.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      setGroupError('A group with this name already exists.'); return;
+    }
+    const next = groupEditor.id
+      ? groups.map((group) => group.id === groupEditor.id ? { ...group, name } : group)
+      : assignConnectionGroup([...groups, { id: uid(), name, profileIds: [], collapsed: false }], groupEditor.ids, null);
+    if (!groupEditor.id) next[next.length - 1].profileIds = groupEditor.ids;
+    if (saveGroups(next)) setGroupEditor(null);
+  }
+
+  function beginExport(ids: string[] | null) {
+    setMenu(null);
+    setExportIds(ids);
+    setTransfer('export');
+  }
+
+  const [deleteIds, setDeleteIds] = useState<string[] | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [draft, setDraft] = useState<ConnectionProfile | null>(null);
   const [isNew, setIsNew] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
+  const [transfer, setTransfer] = useState<'import' | 'export' | null>(null);
 
   useEffect(() => {
     void loadProfiles();
@@ -58,46 +121,210 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
   }, [initialNew]);
 
   useEffect(() => {
-    if (!selectedId && !draft && profiles.length > 0) setSelectedId(profiles[0].profile.id);
-  }, [profiles, selectedId, draft]);
+    if ((!selectedId || !profiles.some(({ profile }) => profile.id === selectedId)) && !draft && !isNew && profiles.length > 0) {
+      setSelectedId(profiles[0].profile.id);
+      setSelectedIds([profiles[0].profile.id]);
+    }
+  }, [profiles, selectedId, draft, isNew]);
 
-  function startNew() {
+  useEffect(() => {
+    setSelectedIds((ids) => {
+      const valid = ids.filter((id) => profiles.some(({ profile }) => profile.id === id));
+      return valid;
+    });
+  }, [profiles]);
+
+  useEffect(() => {
+    if (!menu) return;
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+    const close = (e: Event) => {
+      if (e.target instanceof Node && menuRef.current?.contains(e.target)) return;
+      setMenu(null);
+    };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('resize', close);
+    window.addEventListener('scroll', close, true);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('scroll', close, true);
+    };
+  }, [menu]);
+
+  function selectConnection(id: string, toggle = false, range = false) {
+    const ids = visibleProfiles.map(({ profile }) => profile.id);
+    if (range) {
+      const from = ids.indexOf(anchor.current ?? selectedId ?? id);
+      const to = ids.indexOf(id);
+      const span = ids.slice(Math.min(Math.max(from, 0), to), Math.max(from, to) + 1);
+      setSelectedIds((current) => toggle ? [...new Set([...current, ...span])] : span);
+    } else {
+      setSelectedIds((current) => toggle ? current.includes(id) ? current.filter((item) => item !== id) : [...current, id] : [id]);
+      anchor.current = id;
+    }
+    setSelectedId(id);
+    setIsNew(false);
+    setDraft(null);
+  }
+
+  function openMenu(id: string | null, x: number, y: number, groupId?: string) {
+    if (id && !selectedIds.includes(id)) selectConnection(id);
+    setMenu({ x: Math.max(8, Math.min(x, window.innerWidth - 232)), y: Math.max(8, Math.min(y, window.innerHeight - 420)), groupId });
+  }
+
+  async function deleteSelected() {
+    if (!deleteIds || deleting) return;
+    setDeleting(true);
+    try {
+      for (const id of deleteIds) {
+        if (!(await disconnectProfile(id))) return;
+        await api.profiles.remove(id);
+      }
+      setDeleteIds(null);
+      setSelectedIds([]);
+      setSelectedId(null);
+    } catch (e) { toast('error', errorInfo(e).message); }
+    finally { await loadProfiles(); setDeleting(false); }
+  }
+
+  function startNew(groupId: string | null = null) {
+    newConnectionGroup.current = groupId;
     setDraft(null);
     setIsNew(true);
     setSelectedId(null);
+    setSelectedIds([]);
   }
 
   const selected = profiles.find((p) => p.profile.id === selectedId);
   const anyOpen = Object.keys(connections).length > 0;
+  const exportable = profiles.some(({ profile }) => profile.driver !== 'databricks');
 
   return (
     <div className="conn-screen">
-      <div className="conn-list">
+      <div className="conn-list" onContextMenu={(e) => { e.preventDefault(); openMenu(null, e.clientX, e.clientY); }}>
         <div className="sidebar-top drag">
           <span className="spacer" />
           {anyOpen && (
-            <button className="btn small no-drag" onClick={() => setScreen('workspace')}>
-              Back to workspace
+            <button type="button" className="btn small ghost no-drag" onClick={() => setScreen('workspace')}>
+              Workspace <span className="sidebar-chevron" aria-hidden="true" />
             </button>
           )}
         </div>
         <div className="row" style={{ padding: '0 14px 8px' }}>
           <b style={{ fontSize: 15 }}>Connections</b>
           <span className="spacer" />
-          <button className="btn small" onClick={startNew}>
+          <button className="btn small" onClick={() => startNew()}>
             ＋ New
           </button>
         </div>
-        <div className="scroll grow">
+        <div className="row" style={{ padding: '0 14px 8px' }}>
+          <button className="btn small" title="Import a TablePlus connection file" onClick={() => setTransfer('import')}>Import…</button>
+          <button className="btn small" title="Export connections to TablePlus" disabled={!exportable} onClick={() => beginExport(null)}>Export…</button>
+        </div>
+        <div className="conn-toolbar-divider" role="separator" />
+        <div className="scroll grow conn-selection-list" ref={listRef} tabIndex={0} role="listbox" aria-label="Connections" aria-multiselectable="true"
+          onKeyDown={(e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+              e.preventDefault();
+              setSelectedIds(profiles.map(({ profile }) => profile.id));
+              setIsNew(false);
+            } else if (e.key === 'Escape') { setMenu(null); setSelectedIds(selectedId ? [selectedId] : []); }
+            else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              const index = visibleProfiles.findIndex(({ profile }) => profile.id === selectedId);
+              const next = visibleProfiles[Math.max(0, Math.min(visibleProfiles.length - 1, index + (e.key === 'ArrowDown' ? 1 : -1)))];
+              if (next) {
+                selectConnection(next.profile.id, e.ctrlKey || e.metaKey, e.shiftKey);
+                listRef.current?.querySelector(`[data-connection-id="${CSS.escape(next.profile.id)}"]`)?.scrollIntoView({ block: 'nearest' });
+              }
+            } else if ((e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) && selectedId) {
+              e.preventDefault();
+              const rect = listRef.current!.getBoundingClientRect();
+              openMenu(selectedId, rect.left + 24, rect.top + 24);
+            }
+          }}>
+          {selectedIds.length > 1 && <div className="conn-selection-count">{selectedIds.length} connections selected</div>}
           {profiles.length === 0 && <div className="tree-msg" style={{ padding: '8px 18px' }}>No saved connections yet.</div>}
-          {profiles.map(({ profile }) => (
+          {sections.map(({ group, items }) => (
+            <div key={group?.id ?? '__ungrouped'} role="group" aria-label={group?.name ?? 'Ungrouped'}>
+              {(group || groups.length > 0) && <button type="button"
+                className={`conn-group-header${dragGroup === (group?.id ?? '__ungrouped') ? ' drop-target' : ''}`}
+                aria-expanded={group ? !group.collapsed : undefined}
+                onClick={() => { if (group) saveGroups(groups.map((item) => item.id === group.id ? { ...item, collapsed: !item.collapsed } : item)); }}
+                onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); openMenu(null, e.clientX, e.clientY, group?.id); }}
+                onDragOver={(e) => { if (draggingId) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setDragGroup(group?.id ?? '__ungrouped'); setDropTarget(null); } }}
+                onDragLeave={() => setDragGroup(null)}
+                onDrop={(e) => {
+                  e.preventDefault(); e.stopPropagation();
+                  if (draggingId) {
+                    const ids = selectedIds.includes(draggingId) ? selectedIds : [draggingId];
+                    const next = assignConnectionGroup(groups, ids, group?.id ?? null);
+                    saveGroups(next.map((item) => item.id === group?.id ? { ...item, collapsed: false } : item));
+                  }
+                  setDraggingId(null); setDropTarget(null); setDragGroup(null);
+                }}>
+                <span aria-hidden="true">{group ? group.collapsed ? '▸' : '▾' : '·'}</span>
+                <span className="grow">{group?.name ?? 'Ungrouped'}</span><span className="muted">{items.length}</span>
+              </button>}
+              {(!group?.collapsed) && items.map(({ profile }) => (
             <div
               key={profile.id}
-              className={`conn-item${profile.id === selectedId && !isNew ? ' selected' : ''}`}
-              onClick={() => {
-                setSelectedId(profile.id);
-                setIsNew(false);
-                setDraft(null);
+              className={`conn-item${selectedIds.includes(profile.id) && !isNew ? ' selected' : ''}${draggingId && (selectedIds.includes(draggingId) ? selectedIds.includes(profile.id) : draggingId === profile.id) ? ' dragging' : ''}${dropTarget?.id === profile.id ? (dropTarget.after ? ' drop-after' : ' drop-before') : ''}`}
+              role="option"
+              aria-selected={selectedIds.includes(profile.id) && !isNew}
+              data-connection-id={profile.id}
+              draggable
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                listRef.current?.focus();
+                openMenu(profile.id, e.clientX, e.clientY);
+              }}
+              title="Drag to reorder connections"
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', profile.id);
+                if (!selectedIds.includes(profile.id)) selectConnection(profile.id);
+                setMenu(null);
+                setDraggingId(profile.id);
+              }}
+              onDragOver={(e) => {
+                if (!draggingId) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const rect = e.currentTarget.getBoundingClientRect();
+                setDropTarget(draggingId === profile.id ? null : { id: profile.id, after: e.clientY > rect.top + rect.height / 2 });
+                const list = listRef.current;
+                if (list) {
+                  const bounds = list.getBoundingClientRect();
+                  if (e.clientY < bounds.top + 36) list.scrollTop -= 18;
+                  else if (e.clientY > bounds.bottom - 36) list.scrollTop += 18;
+                }
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (draggingId) {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const ids = selectedIds.includes(draggingId) ? selectedIds : [draggingId];
+                  if (!ids.includes(profile.id) && moveToGroup(ids, group?.id ?? null)) {
+                    moveProfile(ids, profile.id, e.clientY > rect.top + rect.height / 2);
+                  }
+                }
+                setDraggingId(null);
+                setDropTarget(null);
+              }}
+              onDragEnd={() => {
+                setDraggingId(null);
+                setDropTarget(null);
+                setDragGroup(null);
+              }}
+              onClick={(e) => {
+                listRef.current?.focus();
+                setMenu(null);
+                selectConnection(profile.id, e.ctrlKey || e.metaKey, e.shiftKey);
               }}
               onDoubleClick={() => void connect(profile.id)}
             >
@@ -106,17 +333,93 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
                 <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {profile.name || '(unnamed)'}
                 </span>
-                {connections[profile.id] && <span className="dot" style={{ background: 'var(--ok)' }} title="Connected" />}
+                <span className="conn-status">
+                  {connectingProfiles.has(profile.id) ? (
+                    <span role="status" aria-label="Connecting" title="Connecting…"><Spinner /></span>
+                  ) : connectedProfiles.has(profile.id) ? (
+                    <span className="dot" style={{ background: 'var(--ok)' }} title="Connected" />
+                  ) : null}
+                </span>
               </div>
               <div className="row">
                 <EnvBadge env={profile.env} />
                 <span className="c-sub">{describe(profile)}</span>
               </div>
             </div>
+              ))}
+            </div>
           ))}
         </div>
       </div>
 
+      {menu && createPortal(
+        <div className={`conn-context-menu${menu.x + 464 > window.innerWidth ? ' submenu-left' : ''}`} role="menu" aria-label="Connection actions" ref={menuRef}
+          style={{ left: menu.x, top: menu.y }}
+          onContextMenu={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' || e.key === 'Tab') { e.preventDefault(); setMenu(null); listRef.current?.focus(); }
+            if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+              e.preventDefault();
+              const activeMenu = (e.target as HTMLElement).closest('[role="menu"]') ?? e.currentTarget;
+              const buttons = Array.from(activeMenu.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')).filter((button) => button.closest('[role="menu"]') === activeMenu);
+              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+              const next = e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 : (index + (e.key === 'ArrowUp' ? -1 : 1) + buttons.length) % buttons.length;
+              buttons[next]?.focus();
+            }
+          }}>
+          {menu.groupId && <>
+            <button role="menuitem" onClick={() => { const group = groups.find((item) => item.id === menu.groupId); if (group) editGroup(group); }}>Rename group…</button>
+            <button role="menuitem" onClick={() => { saveGroups(groups.filter((item) => item.id !== menu.groupId)); setMenu(null); }}>Remove group (keep connections)</button>
+            <div className="conn-menu-separator" role="separator" />
+          </>}
+          <ConnectionMenuBranch label="New">
+            <button role="menuitem" onClick={() => { const groupId = menu.groupId; setMenu(null); startNew(groupId ?? null); }}>Connection</button>
+            <button role="menuitem" onClick={() => editGroup()}>Group</button>
+          </ConnectionMenuBranch>
+          <ConnectionMenuBranch label="Import Connections">
+            <button role="menuitem" onClick={() => { setMenu(null); setTransfer('import'); }}>From File…</button>
+          </ConnectionMenuBranch>
+          <ConnectionMenuBranch label="Export Connections">
+            <button role="menuitem" disabled={!exportable} onClick={() => beginExport(null)}>All Connections</button>
+            <button role="menuitem" disabled={!profiles.some(({ profile }) => selectedIds.includes(profile.id) && profile.driver !== 'databricks')} onClick={() => beginExport([...selectedIds])}>Selected ({selectedIds.length})</button>
+          </ConnectionMenuBranch>
+          <div className="conn-menu-separator" role="separator" />
+          <button role="menuitem" disabled={selectedIds.length !== 1} onClick={() => { setMenu(null); if (selectedIds[0]) void connect(selectedIds[0]); }}>Connect</button>
+          <button role="menuitem" disabled={!selectedIds.some((id) => connectedProfiles.has(id))} onClick={() => {
+            setMenu(null);
+            void (async () => { try { for (const id of selectedIds) if (connectedProfiles.has(id)) await disconnectProfile(id); } catch (e) { toast('error', errorInfo(e).message); } })();
+          }}>Disconnect{selectedIds.length > 1 ? ` (${selectedIds.length})` : ''}</button>
+          <button role="menuitem" disabled={selectedIds.length !== 1} onClick={() => {
+            setMenu(null);
+            const original = profiles.find(({ profile }) => profile.id === selectedIds[0]);
+            if (original) { setDraft({ ...original.profile, id: uid(), name: `${original.profile.name} copy` }); setIsNew(true); }
+          }}>Duplicate…</button>
+          <ConnectionMenuBranch label="Move to Group" disabled={!selectedIds.length}>
+            <button role="menuitem" onClick={() => { moveToGroup(selectedIds, null); setMenu(null); }}>Ungrouped</button>
+            {groups.map((group) => <button key={group.id} role="menuitem" onClick={() => { moveToGroup(selectedIds, group.id); setMenu(null); }}>{group.name}</button>)}
+            <div className="conn-menu-separator" role="separator" />
+            <button role="menuitem" onClick={() => editGroup()}>New Group…</button>
+          </ConnectionMenuBranch>
+          <div className="conn-menu-separator" role="separator" />
+          <button role="menuitem" onClick={() => { setMenu(null); setSelectedIds(profiles.map(({ profile }) => profile.id)); listRef.current?.focus(); }}>Select all</button>
+          <button role="menuitem" disabled={!selectedIds.length} className="destructive" onClick={() => { setMenu(null); setDeleteIds([...selectedIds]); }}>Delete{selectedIds.length > 1 ? ` ${selectedIds.length} connections` : ' connection'}…</button>
+        </div>, document.body)}
+      {groupEditor && <Modal narrow title={groupEditor.id ? 'Rename group' : 'New group'} onClose={() => setGroupEditor(null)}>
+        <form onSubmit={saveGroup} style={{ display: 'grid', gap: 12 }}>
+          <label>Group name<input className="input" style={{ width: '100%', marginTop: 6 }} autoFocus value={groupEditor.name} onChange={(e) => setGroupEditor({ ...groupEditor, name: e.target.value })} /></label>
+          {!groupEditor.id && groupEditor.ids.length > 0 && <span className="muted">Move {groupEditor.ids.length} selected connections into this group.</span>}
+          {groupError && <span role="alert" style={{ color: 'var(--danger)' }}>{groupError}</span>}
+          <div className="row" style={{ justifyContent: 'flex-end' }}><button className="btn" type="button" onClick={() => setGroupEditor(null)}>Cancel</button><button className="btn primary" type="submit">{groupEditor.id ? 'Save' : 'Create group'}</button></div>
+        </form>
+      </Modal>}
+      {deleteIds && <Modal title={`Delete ${deleteIds.length} connection${deleteIds.length === 1 ? '' : 's'}?`} onClose={() => { if (!deleting) setDeleteIds(null); }}>
+        <p>This deletes the selected profiles, their Keychain secrets, history and saved queries.</p>
+        <ul>{profiles.filter(({ profile }) => deleteIds.includes(profile.id)).map(({ profile }) => <li key={profile.id}>{profile.name || '(unnamed)'}</li>)}</ul>
+        <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+          <button className="btn" disabled={deleting} onClick={() => setDeleteIds(null)}>Keep</button>
+          <button className="btn danger" disabled={deleting} onClick={() => void deleteSelected()}>{deleting ? 'Deleting…' : 'Delete'}</button>
+        </div>
+      </Modal>}
       <div className="conn-detail">
         {isNew && !draft && <DriverPicker onPick={(d) => setDraft(blankProfile(d))} />}
         {isNew && draft && (
@@ -129,6 +432,9 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
               setIsNew(false);
               setDraft(null);
               setSelectedId(p.id);
+              setSelectedIds([p.id]);
+              if (newConnectionGroup.current) moveToGroup([p.id], newConnectionGroup.current);
+              newConnectionGroup.current = null;
             }}
             onCancel={() => {
               setIsNew(false);
@@ -141,8 +447,8 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
             key={selected.profile.id + selected.profile.updatedAt}
             initial={selected.profile}
             storedSecrets={selected.storedSecrets}
-            connected={!!connections[selected.profile.id]}
-            connecting={!!connecting[selected.profile.id]}
+            connected={connectedProfiles.has(selected.profile.id)}
+            connecting={connectingProfiles.has(selected.profile.id)}
             connectError={connectErrors[selected.profile.id]}
             onConnect={() => void connect(selected.profile.id)}
             onSaved={() => undefined}
@@ -161,13 +467,99 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
               <span aria-hidden="true">L</span>
             </h2>
             <p>Connect to PostgreSQL, MySQL, Databricks or Microsoft SQL Server.</p>
-            <button className="btn primary" onClick={startNew}>
+            <button className="btn primary" onClick={() => startNew()}>
               Add a connection
             </button>
           </div>
         )}
       </div>
+      {transfer && (
+        <ConnectionTransfer
+          mode={transfer}
+          selectedIds={exportIds}
+          onClose={() => setTransfer(null)}
+        />
+      )}
     </div>
+  );
+}
+
+function ConnectionTransfer({ mode, selectedIds, onClose }: {
+  mode: 'import' | 'export';
+  selectedIds: string[] | null;
+  onClose: () => void;
+}) {
+  const isImport = mode === 'import';
+  const [password, setPassword] = useState('');
+  const [scope, setScope] = useState(selectedIds ? 'selected' : 'all');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ErrorInfo | null>(null);
+  const loadProfiles = useApp((state) => state.loadProfiles);
+  const toast = useApp((state) => state.toast);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (isImport) {
+        const result = await api.profiles.importTablePlus(password);
+        if (!result) return;
+        if (result.imported || result.passwordsSaved || result.environmentsUpdated) await loadProfiles();
+        const details = [
+          result.duplicates ? `${result.duplicates} already saved` : '',
+          result.skipped ? `${result.skipped} unsupported or incomplete` : '',
+        ].filter(Boolean);
+        const profiles = `Imported ${result.imported} ${result.imported === 1 ? 'connection' : 'connections'}${details.length ? ` (${details.join(', ')})` : ''}.`;
+        const passwords = result.passwordsSaved ? ` Saved ${result.passwordsSaved} database ${result.passwordsSaved === 1 ? 'password' : 'passwords'} in Keychain.` : '';
+        const environments = result.environmentsUpdated ? ` Updated ${result.environmentsUpdated} ${result.environmentsUpdated === 1 ? 'environment' : 'environments'}.` : '';
+        toast(result.imported || result.passwordsSaved || result.environmentsUpdated ? 'ok' : 'info', profiles + passwords + environments);
+        if (result.passwordsFailed) toast('error', `Keychain could not save ${result.passwordsFailed} database ${result.passwordsFailed === 1 ? 'password' : 'passwords'}. Try importing the file again.`);
+      } else {
+        const result = await api.profiles.exportTablePlus(scope === 'selected' ? selectedIds : null, password);
+        if (!result) return;
+        toast('ok', `Exported ${result.exported} ${result.exported === 1 ? 'connection' : 'connections'}.${result.skipped ? ` ${result.skipped} Databricks ${result.skipped === 1 ? 'profile' : 'profiles'} skipped.` : ''}`);
+        if (result.reviewTls) toast('info', `Review SSL settings in TablePlus for ${result.reviewTls} ${result.reviewTls === 1 ? 'connection' : 'connections'}.`);
+      }
+      onClose();
+    } catch (e) {
+      setError(errorInfo(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal narrow title={isImport ? 'Import from TablePlus' : 'Export to TablePlus'} onClose={() => !busy && onClose()}>
+      <form onSubmit={(event) => void submit(event)} style={{ display: 'grid', gap: 12 }}>
+        <p className="muted" style={{ margin: 0 }}>
+          PostgreSQL, MySQL, and SQL Server profiles. {isImport
+            ? 'Database passwords included in encrypted TablePlus files are saved to Keychain. Existing passwords are kept.'
+            : 'Enter database passwords separately in TablePlus after transfer.'}
+        </p>
+        {!isImport && selectedIds && (
+          <label>
+            Connections
+            <select aria-label="Connections to export" style={{ width: '100%' }} value={scope} disabled={busy} onChange={(event) => setScope(event.target.value)}>
+              <option value="selected">Selected ({selectedIds.length})</option>
+              <option value="all">All supported connections</option>
+            </select>
+          </label>
+        )}
+        <label>
+          {isImport ? 'File password (if set)' : 'File password'}
+          <input autoFocus aria-label="File password" style={{ width: '100%' }} type="password" autoComplete="off" value={password} required={!isImport} disabled={busy} onChange={(event) => setPassword(event.target.value)} />
+        </label>
+        {error && <ErrorView error={error} compact />}
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn" type="button" disabled={busy} onClick={onClose}>Cancel</button>
+          <button className="btn primary" type="submit" disabled={busy || (!isImport && !password)}>
+            {busy ? <Spinner /> : isImport ? 'Choose File…' : 'Save File…'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 
@@ -218,13 +610,19 @@ function ProfileEditor({
   onDeleted?: () => void;
   onDuplicate?: () => void;
 }) {
-  const { loadProfiles, connect, disconnect, toast } = useApp();
+  const { loadProfiles, connect, disconnectProfile, toast } = useApp();
   const [p, setP] = useState<ConnectionProfile>(initial);
   const [secrets, setSecrets] = useState<Secrets>({});
   const [clearSecret, setClearSecret] = useState<Partial<Record<SecretField, boolean>>>({});
   const [test, setTest] = useState<TestResult | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
+  const saveButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => onMenuCommand((command) => {
+    if (command === 'save' && !document.querySelector('[role="dialog"][aria-modal="true"]')) {
+      saveButton.current?.click();
+    }
+  }), []);
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const dirty = useMemo(() => JSON.stringify(p) !== JSON.stringify(initial) || Object.values(secrets).some(Boolean) || Object.values(clearSecret).some(Boolean), [p, initial, secrets, clearSecret]);
@@ -277,15 +675,13 @@ function ProfileEditor({
     }
     setSaving(true);
     try {
+      if (connected && !(await disconnectProfile(p.id))) return;
       const s = await api.profiles.save({ ...p, name: p.name.trim(), host: p.host.trim() } as ConnectionProfile, secretsToSend());
       await loadProfiles();
       setSecrets({});
       setClearSecret({});
       onSaved(s.profile);
       toast('ok', `Saved “${s.profile.name}”. Secrets are stored in the macOS Keychain.`);
-      if (connected) {
-        await disconnect(s.profile.id);
-      }
       if (andConnect) await connect(s.profile.id);
     } catch (e) {
       setSaveErr(errorInfo(e).message);
@@ -295,10 +691,13 @@ function ProfileEditor({
   }
 
   async function remove() {
-    await api.profiles.remove(p.id);
-    await loadProfiles();
-    onDeleted?.();
-    toast('info', `Deleted “${p.name}” and its Keychain secrets.`);
+    try {
+      if (!(await disconnectProfile(p.id))) return;
+      await api.profiles.remove(p.id);
+      await loadProfiles();
+      onDeleted?.();
+      toast('info', `Deleted “${p.name}” and its Keychain secrets.`);
+    } catch (e) { toast('error', errorInfo(e).message); }
   }
 
   const tlsModes: { mode: TlsMode; label: string }[] = [
@@ -317,10 +716,10 @@ function ProfileEditor({
         </div>
         {!isNew && (
           <>
-            {connected ? (
+            {connected && !connecting ? (
               <span className="pill ok">Connected</span>
             ) : (
-              <button className="btn primary" onClick={onConnect} disabled={connecting || dirty}>
+              <button className="btn primary" onClick={onConnect} disabled={connecting || dirty} aria-busy={connecting}>
                 {connecting ? <Spinner /> : null} Connect
               </button>
             )}
@@ -473,10 +872,10 @@ function ProfileEditor({
             Cancel
           </button>
         )}
-        <button className="btn" onClick={() => void save(false)} disabled={saving || (!isNew && !dirty)}>
+        <button ref={saveButton} className="btn" aria-keyshortcuts="Meta+S" title="Save connection (⌘S)" onClick={() => void save(false)} disabled={saving || (!isNew && !dirty)}>
           Save
         </button>
-        <button className="btn primary" onClick={() => void save(true)} disabled={saving}>
+        <button className="btn primary" onClick={() => void save(true)} disabled={saving} aria-busy={saving}>
           {saving ? <Spinner /> : null} {isNew ? 'Save & Connect' : 'Save & Reconnect'}
         </button>
       </div>
@@ -494,7 +893,7 @@ function ProfileEditor({
             Duplicate
           </button>
           {connected && (
-            <button className="btn small" onClick={() => void disconnect(p.id)}>
+            <button className="btn small" onClick={() => { void disconnectProfile(p.id).catch((e) => toast('error', errorInfo(e).message)); }}>
               Disconnect
             </button>
           )}
@@ -511,7 +910,7 @@ function ProfileEditor({
             </>
           ) : (
             <button className="btn small ghost" style={{ color: 'var(--danger)' }} onClick={() => setConfirmDelete(true)}>
-              Delete profile…
+              Delete connection
             </button>
           )}
         </div>

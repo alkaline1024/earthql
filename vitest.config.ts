@@ -14,7 +14,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['packages/*/test/**/*.test.ts'],
+    include: ['packages/*/test/**/*.test.ts', 'apps/desktop/test/**/*.test.ts'],
     exclude: ['packages/*/test/**/*.integration.test.ts'],
   },
 });

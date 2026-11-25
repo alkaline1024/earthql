@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, Menu, shell, ipcMain } from 'electron';
 import path from 'node:path';
 import { registerIpc } from './ipc';
 import { SessionManager } from './sessions';
@@ -9,6 +9,18 @@ app.setName('EarthQL');
 let mainWindow: BrowserWindow | null = null;
 const sessions = new SessionManager((channel, payload) => {
   for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, payload);
+});
+
+let allowWindowClose = false;
+let quitRequested = false;
+app.on('before-quit', () => { quitRequested = true; });
+ipcMain.on('window:closeConfirmed', (event, discard: unknown) => {
+  if (discard !== true) { quitRequested = false; return; }
+  const window = BrowserWindow.fromWebContents(event.sender);
+  if (!window) return;
+  allowWindowClose = true;
+  if (quitRequested) app.quit();
+  else window.close();
 });
 
 function createWindow(): void {
@@ -33,6 +45,13 @@ function createWindow(): void {
     },
   });
 
+  allowWindowClose = false;
+  mainWindow.on('close', (event) => {
+    if (allowWindowClose) return;
+    event.preventDefault();
+    mainWindow?.webContents.send('menu:command', 'close-window');
+  });
+
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
   // Never navigate the app window away; open links in the default browser.
@@ -54,6 +73,10 @@ function buildMenu(): void {
     quitting = true;
     await closeSessionsForQuit();
   }, () => { quitting = false; });
+  if (!checkForUpdates) {
+    ipcMain.handle('updates:status', () => ({ ok: true, value: { available: false, busy: false } }));
+    ipcMain.handle('updates:install', () => ({ ok: true, value: undefined }));
+  }
   const template: Electron.MenuItemConstructorOptions[] = [
     { role: 'appMenu' },
     {
@@ -63,6 +86,7 @@ function buildMenu(): void {
         { label: 'New SQL Editor Tab', accelerator: 'CmdOrCtrl+T', click: send('new-sql-tab') },
         { type: 'separator' },
         { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
+        { label: 'Close All Tabs', accelerator: 'CmdOrCtrl+Shift+W', click: send('close-all-tabs') },
       ],
     },
     { role: 'editMenu' },
@@ -115,7 +139,7 @@ function closeSessionsForQuit() {
   return Promise.race([sessions.closeAll().catch(() => undefined), new Promise<void>((resolve) => setTimeout(resolve, 3000))]);
 }
 
-app.on('before-quit', (e) => {
+app.on('will-quit', (e) => {
   if (quitting) return;
   quitting = true;
   e.preventDefault();

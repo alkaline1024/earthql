@@ -36,7 +36,7 @@ import { postgresDriver } from '@earthql/driver-postgres';
 import { mysqlDriver } from '@earthql/driver-mysql';
 import { databricksDriver } from '@earthql/driver-databricks';
 import { mssqlDriver } from '@earthql/driver-mssql';
-import type { ExportOptions, ExportResult, ExportScope, HistoryEntry, OpenConnection, RunResponse } from '../shared/api';
+import type { ConnectionScope, ExportOptions, ExportResult, ExportScope, HistoryEntry, OpenConnection, RunResponse } from '../shared/api';
 import { getSecrets } from './keychain';
 import { addHistory, loadProfiles } from './store';
 
@@ -49,6 +49,7 @@ export const DRIVERS: Record<DriverId, DriverModule> = {
 
 interface Live {
   profile: ConnectionProfile;
+  scope?: ConnectionScope;
   secrets: Secrets;
   conn: DriverConnection;
   structures: Map<string, TableStructure>;
@@ -65,6 +66,7 @@ const keyOf = (o: ObjectPath) => JSON.stringify([o.catalog ?? '', o.database ?? 
 
 export class SessionManager {
   private live = new Map<string, Live>();
+  private opening = new Map<string, { profileId: string }>();
   private runs = new Map<string, ScriptRun>();
   private cursors = new Map<string, OpenCursor>();
   private exports = new Map<string, { cancel: () => void }>();
@@ -91,35 +93,86 @@ export class SessionManager {
     return DRIVERS[profile.driver].connect(profile, secrets);
   }
 
-  async open(profileId: string): Promise<OpenConnection> {
-    await this.close(profileId);
-    const profile = this.profile(profileId);
+  open(profileId: string): Promise<OpenConnection> {
+    return this.openSession(profileId, profileId);
+  }
+
+  openSeparate(sessionId: string, name: string): Promise<OpenConnection> {
+    const source = this.get(sessionId);
+    const kind = source.conn.capabilities().hierarchy[0];
+    if ((kind !== 'database' && kind !== 'catalog') || typeof name !== 'string' || !name.trim()) {
+      throw makeError('config', 'Select a database or catalog to open.');
+    }
+    return this.openSession(randomUUID(), source.profile.id, { kind, name });
+  }
+
+  reconnect(sessionId: string): Promise<OpenConnection> {
+    const source = this.live.get(sessionId);
+    return this.openSession(sessionId, source?.profile.id ?? sessionId, source?.scope);
+  }
+
+  savedProfileId(sessionId: string): string {
+    return this.live.get(sessionId)?.profile.id ?? sessionId;
+  }
+
+  private async openSession(sessionId: string, profileId: string, scope?: ConnectionScope): Promise<OpenConnection> {
+    if (this.opening.has(sessionId)) throw makeError('config', 'This connection is already opening.');
+    let profile = this.profile(profileId);
+    if (scope) {
+      if (scope.kind === 'catalog' && profile.driver === 'databricks') {
+        profile = { ...profile, catalog: scope.name, schema: profile.catalog === scope.name ? profile.schema : undefined };
+      } else if (scope.kind === 'database' && profile.driver !== 'databricks') {
+        profile = { ...profile, database: scope.name };
+      } else throw makeError('config', 'The selected database or catalog does not match this driver.');
+    }
     const secrets = getSecrets(profileId);
-    const missing = secretFieldsFor(profile as any).filter((f) => !secrets[f]);
+    const missing = secretFieldsFor(profile).filter((f) => !secrets[f]);
     if (missing.length && profile.driver === 'databricks') {
       throw makeError('config', `No ${missing.join(', ')} is saved for this profile. Edit the profile to enter it.`);
     }
     const conn = this.createConnection(profile, secrets);
-    // Prove the connection works (and surface auth/network/permission errors) before showing the workspace.
+    const ticket = { profileId };
+    this.opening.set(sessionId, ticket);
     try {
-      await conn.listChildren(null);
+      const roots = await conn.listChildren(null);
+      if (scope) {
+        const selected = roots.find((node) => node.kind === scope.kind && node.name === scope.name);
+        if (!selected) throw makeError('not_found', 'The selected database or catalog is no longer available.');
+        if (scope.kind === 'catalog') await conn.listChildren(selected);
+      }
+      if (this.opening.get(sessionId) !== ticket) throw makeError('cancelled', 'Opening the connection was cancelled.');
+      await this.closeLive(sessionId);
+      if (this.opening.get(sessionId) !== ticket) throw makeError('cancelled', 'Opening the connection was cancelled.');
+      this.live.set(sessionId, { profile, scope, secrets, conn, structures: new Map() });
+      return { sessionId, profileId, scope, capabilities: conn.capabilities(), defaultContext: conn.defaultContext() };
     } catch (e) {
       await conn.close().catch(() => undefined);
       throw conn.classifyError(e);
+    } finally {
+      if (this.opening.get(sessionId) === ticket) this.opening.delete(sessionId);
     }
-    this.live.set(profileId, { profile, secrets, conn, structures: new Map() });
-    return { profileId, capabilities: conn.capabilities(), defaultContext: conn.defaultContext() };
   }
 
-  async close(profileId: string): Promise<void> {
-    for (const [id, c] of this.cursors) if (c.profileId === profileId) await this.closeCursor(id);
-    const l = this.live.get(profileId);
-    this.live.delete(profileId);
+  close(sessionId: string): Promise<void> {
+    this.opening.delete(sessionId);
+    return this.closeLive(sessionId);
+  }
+
+  private async closeLive(sessionId: string): Promise<void> {
+    const l = this.live.get(sessionId);
+    this.live.delete(sessionId);
+    for (const [id, c] of this.cursors) if (c.profileId === sessionId) await this.closeCursor(id);
     if (l) await l.conn.close().catch(() => undefined);
   }
 
+  async closeProfile(profileId: string): Promise<void> {
+    const ids = new Set([...this.live.keys(), ...this.opening.keys()]);
+    await Promise.all([...ids].filter((id) => this.live.get(id)?.profile.id === profileId ||
+      this.opening.get(id)?.profileId === profileId).map((id) => this.close(id)));
+  }
+
   async closeAll(): Promise<void> {
-    await Promise.all([...this.live.keys()].map((id) => this.close(id)));
+    await Promise.all([...new Set([...this.live.keys(), ...this.opening.keys()])].map((id) => this.close(id)));
   }
 
   get(profileId: string): Live {
@@ -178,10 +231,12 @@ export class SessionManager {
     const started = Date.now();
     try {
       const out = await run.run();
-      if (out.open) {
+      if (out.open && this.live.get(profileId) === l) {
         const cursorId = randomUUID();
         this.cursors.set(cursorId, { profileId, cursor: out.open.cursor, columns: out.open.columns, lastUsed: Date.now() });
         out.results[out.open.statementIndex].cursorId = cursorId;
+      } else if (out.open) {
+        await out.open.cursor.close().catch(() => undefined);
       }
       const statusOf = (): HistoryEntry['status'] => {
         if (out.results.some((r) => r.status === 'outcome_unknown')) return 'outcome_unknown';
@@ -190,7 +245,7 @@ export class SessionManager {
         return 'ok';
       };
       if (out.results.length > 0) {
-        addHistory(profileId, {
+        addHistory(l.profile.id, {
           id: runId,
           sql,
           ranAt: started,

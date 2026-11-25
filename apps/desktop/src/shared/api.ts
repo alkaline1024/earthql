@@ -39,10 +39,32 @@ export interface ProfileSummary {
   storedSecrets: SecretField[];
 }
 
+export interface ConnectionImportResult {
+  imported: number;
+  duplicates: number;
+  skipped: number;
+  environmentsUpdated: number;
+  passwordsSaved: number;
+  passwordsFailed: number;
+}
+
+export interface ConnectionExportResult {
+  exported: number;
+  skipped: number;
+  reviewTls: number;
+}
+
+export interface ConnectionScope {
+  kind: 'database' | 'catalog';
+  name: string;
+}
+
 export interface OpenConnection {
+  sessionId: string;
   profileId: string;
   capabilities: Capabilities;
   defaultContext: ExecContext;
+  scope?: ConnectionScope;
 }
 
 export interface RunResponse {
@@ -98,10 +120,57 @@ export interface ExportResult {
   error?: ErrorInfo;
 }
 
+export type TableFileFormat = 'csv' | 'json' | 'sql' | 'xlsx';
+export interface TableExportItem {
+  object: ObjectPath;
+  data: boolean;
+  structure: boolean;
+  drop: boolean;
+}
+export interface TableExportOptions {
+  format: TableFileFormat;
+  suggestedName: string;
+  delimiter: string;
+  quote: 'needed' | 'all';
+  lineBreak: '\n' | '\r\n';
+  decimal: '.' | ',';
+  headers: boolean;
+  nullToEmpty: boolean;
+  replaceLineBreaks: boolean;
+  bom: boolean;
+  gzip: boolean;
+}
+export type TableImportFormat = 'csv' | 'json' | 'sql';
+export interface TableImportPreview {
+  token: string;
+  fileName: string;
+  columns: string[];
+  sample: (string | null)[][];
+  rows: number;
+  statements?: number;
+  sqlPreview?: string;
+  targetColumns: { name: string; type: string; nullable: boolean | null; generated: boolean }[];
+}
+export interface TableImportResult {
+  status: 'ok' | 'error' | 'outcome_unknown' | 'cancelled';
+  rows: number;
+  statements?: number;
+  error?: ErrorInfo;
+}
+
+export interface UpdateStatus { available: boolean; busy: boolean; }
+
 export interface EarthQLApi {
+  updates: {
+    status(): Promise<UpdateStatus>;
+    install(): Promise<void>;
+    onStatus(cb: (status: UpdateStatus) => void): () => void;
+  };
   platform: string;
   profiles: {
     list(): Promise<ProfileSummary[]>;
+    importTablePlus(password: string): Promise<ConnectionImportResult | null>;
+    exportTablePlus(profileId: string | string[] | null, password: string): Promise<ConnectionExportResult | null>;
     /** `secrets`: fields to store; omitted fields keep the stored value; empty string clears it. */
     save(profile: ConnectionProfile, secrets: Secrets): Promise<ProfileSummary>;
     remove(id: string): Promise<void>;
@@ -110,7 +179,10 @@ export interface EarthQLApi {
   };
   connection: {
     open(profileId: string): Promise<OpenConnection>;
-    close(profileId: string): Promise<void>;
+    openSeparate(sessionId: string, name: string): Promise<OpenConnection>;
+    reconnect(sessionId: string): Promise<OpenConnection>;
+    close(sessionId: string): Promise<void>;
+    closeProfile(profileId: string): Promise<void>;
   };
   meta: {
     children(profileId: string, node: TreeNode | null): Promise<TreeNode[]>;
@@ -143,6 +215,16 @@ export interface EarthQLApi {
     list(profileId: string): Promise<SavedQuery[]>;
     save(profileId: string, q: Omit<SavedQuery, 'createdAt' | 'updatedAt'> & { createdAt?: number }): Promise<SavedQuery>;
     remove(profileId: string, id: string): Promise<void>;
+  };
+  tableActions: {
+    run(profileId: string, request: import('./table-actions').TableActionRequest): Promise<WriteResult>;
+  };
+  tableFiles: {
+    export(exportId: string, profileId: string, items: TableExportItem[], options: TableExportOptions): Promise<ExportResult>;
+    read(profileId: string, object: ObjectPath, format: TableImportFormat, options: { delimiter: string; headers: boolean }): Promise<TableImportPreview | null>;
+    import(token: string, mapping: Record<string, string>, emptyAsNull: boolean): Promise<TableImportResult>;
+    release(token: string): Promise<void>;
+    cancel(id: string): Promise<void>;
   };
   exports: {
     run(exportId: string, scope: ExportScope, opts: ExportOptions): Promise<ExportResult>;

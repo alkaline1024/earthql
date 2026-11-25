@@ -36,7 +36,7 @@ function fullType(c: ColDraft, types: TypeOption[]): string {
   return c.baseType;
 }
 
-export function CreateTableTab({ tabId, profileId, container }: { tabId: string; profileId: string; container: Partial<ObjectPath> }) {
+export function CreateTableTab({ tabId, profileId, container, refreshVersion = 0 }: { tabId: string; profileId: string; container: Partial<ObjectPath>; refreshVersion?: number }) {
   const conn = useApp((s) => s.connections[profileId]);
   const { openTab, closeTab, refreshTree, toast } = useApp();
   const profile = profileOf(profileId)?.profile;
@@ -80,7 +80,7 @@ export function CreateTableTab({ tabId, profileId, container }: { tabId: string;
       .children(profileId, null)
       .then((n) => setTopOptions(n.map((x) => x.name)))
       .catch(() => setTopOptions([]));
-  }, [profileId]);
+  }, [profileId, refreshVersion]);
 
   // Schemas of the chosen top-level container
   useEffect(() => {
@@ -90,7 +90,7 @@ export function CreateTableTab({ tabId, profileId, container }: { tabId: string;
       .children(profileId, node)
       .then((n) => setSchemaOptions(n.map((x) => x.name)))
       .catch(() => setSchemaOptions([]));
-  }, [profileId, top, hasSchema, topLevel]);
+  }, [profileId, top, hasSchema, topLevel, refreshVersion]);
 
   const object: ObjectPath = useMemo(
     () => ({
@@ -137,7 +137,7 @@ export function CreateTableTab({ tabId, profileId, container }: { tabId: string;
       .then((p) => setCreatePriv(p.create === 'no' ? 'This account cannot create tables here; the database will reject the statement.' : null))
       .catch(() => setCreatePriv(null));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profileId, top, schema]);
+  }, [profileId, top, schema, refreshVersion]);
 
   const upd = (key: number, patch: Partial<ColDraft>) => setCols((cs) => cs.map((c) => (c.key === key ? { ...c, ...patch } : c)));
   const move = (key: number, d: -1 | 1) =>

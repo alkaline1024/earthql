@@ -11,7 +11,7 @@ export function FeedbackDialog({ screenshot, onClose }: { screenshot: string | n
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [image, setImage] = useState(screenshot);
-  const [attach, setAttach] = useState(false);
+  const [attach, setAttach] = useState(!!screenshot);
   const [settings, setSettings] = useState<FeedbackSettings>();
   const [showSettings, setShowSettings] = useState(false);
   const [url, setUrl] = useState('');
@@ -123,8 +123,8 @@ export function FeedbackDialog({ screenshot, onClose }: { screenshot: string | n
                     <span className="spacer" />
                     <button className="btn small ghost" disabled={pending} onClick={() => { setImage(null); setAttach(false); }}>Remove screenshot</button>
                   </div>
-                  <FeedbackScreenshot image={image} onEdit={(value) => { setImage(value); setAttach(false); }} disabled={pending}
-                    onReset={image !== screenshot && screenshot ? () => { setImage(screenshot); setAttach(false); } : undefined} />
+                  <FeedbackScreenshot image={image} onEdit={setImage} disabled={pending}
+                    onReset={image !== screenshot && screenshot ? () => setImage(screenshot) : undefined} />
                 </>
               ) : <span className="small muted">This report will be sent without a screenshot.</span>}
               {!ready && <span className="small muted">Enter the URL and submission key in Feedback Settings to enable sending.</span>}

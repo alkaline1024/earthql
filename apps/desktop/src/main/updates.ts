@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, type MessageBoxOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, type MessageBoxOptions } from 'electron';
 import { execFile, spawn } from 'node:child_process';
 import { copyFile, lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
@@ -59,6 +59,25 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
   const key = releaseKey(__EARTHQL_UPDATE_PUBLIC_KEY__);
   let busy = false;
   let restarting = false;
+  let available = false;
+  const status = () => ({ available, busy });
+  function publish() {
+    for (const window of BrowserWindow.getAllWindows()) window.webContents.send('updates:status', status());
+  }
+  ipcMain.handle('updates:status', () => ({ ok: true, value: status() }));
+  ipcMain.handle('updates:install', () => {
+    if (available) void check();
+    return { ok: true, value: undefined };
+  });
+
+  // Discover releases without interrupting work; the button starts the existing installer.
+  void (async () => {
+    try {
+      const release = readUpdateRelease(await getUpdateManifest(), key);
+      available = isNewerVersion(release.version, app.getVersion());
+      publish();
+    } catch { /* A failed background check must not interrupt startup. */ }
+  })();
 
   function message(options: MessageBoxOptions) {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -72,10 +91,13 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
   async function check() {
     if (busy || restarting) return;
     busy = true;
+    publish();
     let stage: string | undefined;
     try {
       const release = readUpdateRelease(await getUpdateManifest(), key);
-      if (!isNewerVersion(release.version, app.getVersion())) {
+      available = isNewerVersion(release.version, app.getVersion());
+      publish();
+      if (!available) {
         await message({ type: 'info', message: 'EarthQL is up to date.', detail: `Installed version ${app.getVersion()}.` });
         return;
       }
@@ -112,6 +134,7 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
       progress(-1);
       if (stage) await rm(stage, { recursive: true, force: true }).catch(() => undefined);
       busy = false;
+      publish();
     }
   }
 

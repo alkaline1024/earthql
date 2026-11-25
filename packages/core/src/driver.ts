@@ -63,6 +63,8 @@ export interface DriverConnection {
   openCursor(stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions): QueryCursor;
   /** Apply grid statements on a single connection in an atomic transaction. */
   applyGridUpdates?(object: ObjectPath, statements: StatementInput[]): Promise<void>;
+  /** Execute a compiled table-management batch on one database session. */
+  executeTableStatements?(object: ObjectPath, statements: string[], options: { disableForeignKeys: boolean; cleanupSql?: string }): Promise<void>;
   /** Default execution context (profile database / catalog / schema). */
   defaultContext(): ExecContext;
   /** Available contexts for the SQL editor selector (databases or catalogs at the top level). */

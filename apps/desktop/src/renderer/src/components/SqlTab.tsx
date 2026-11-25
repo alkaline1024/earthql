@@ -42,11 +42,13 @@ export function SqlTab({
   initialSql,
   context,
   active,
+  refreshVersion = 0,
 }: {
   profileId: string;
   initialSql: string;
   context: ExecContext;
   active: boolean;
+  refreshVersion?: number;
 }) {
   const conn = useApp((s) => s.connections[profileId]);
   const profile = profileOf(profileId)?.profile;
@@ -82,7 +84,7 @@ export function SqlTab({
     return () => {
       alive = false;
     };
-  }, [profileId, ctx]);
+  }, [profileId, ctx, refreshVersion]);
 
   useEffect(() => api.query.onPhase((e) => {
     if (runRef.current && e.runId === runRef.current.runId) setRun((r) => (r ? { ...r, phase: e.phase, statementIndex: e.statementIndex } : r));
@@ -288,7 +290,7 @@ export function SqlTab({
           <SidePanel
             profileId={profileId}
             mode={panel}
-            version={historyVersion}
+            version={historyVersion + refreshVersion}
             saving={saving}
             onSavingChange={setSaving}
             getText={() => editor.current?.getText() ?? ''}

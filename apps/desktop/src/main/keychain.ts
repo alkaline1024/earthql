@@ -35,6 +35,13 @@ export function setSecret(profileId: string, field: SecretField, value: string):
   entry(profileId, field).setPassword(value);
 }
 
+export function saveImportedPassword(profileId: string, password: string): boolean {
+  const credential = entry(profileId, 'password');
+  if (credential.getPassword() !== null) return false;
+  credential.setPassword(password);
+  return true;
+}
+
 export function deleteSecret(profileId: string, field: SecretField): void {
   try {
     entry(profileId, field).deletePassword();

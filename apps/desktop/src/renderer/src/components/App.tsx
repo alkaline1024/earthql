@@ -1,27 +1,31 @@
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
-import { describePath } from '@earthql/core';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, onMenuCommand } from '../api';
-import { profileOf, useApp, type Tab } from '../store';
+import { connectionName, useApp } from '../store';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { CreateTableTab } from './CreateTableTab';
 import { Sidebar } from './Sidebar';
 import { SqlTab } from './SqlTab';
 import { TableTab } from './TableTab';
+import { TabBar } from './TabBar';
 import { ErrorBoundary } from './ErrorBoundary';
 import { FeedbackDialog } from './FeedbackDialog';
-
-function tabTitle(t: Tab): { title: string; sub: string; icon: string } {
-  if (t.kind === 'table') return { title: t.object.name, sub: describePath({ ...t.object, name: '' }).replace(/\.$/, ''), icon: t.objectKind === 'view' ? '◇' : '▦' };
-  if (t.kind === 'sql') return { title: t.title, sub: '', icon: '⌨︎' };
-  return { title: 'New table', sub: describePath({ ...t.container, name: '' }).replace(/\.$/, ''), icon: '＋' };
-}
+import { UpdateButton } from './UpdateButton';
+import { Modal } from './common';
 
 export function App() {
-  const { screen, tabs, activeTabId, activateTab, closeTab, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
+  const { screen, tabs, activeTabId, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
+  const { discardPrompt, resolveDiscard } = useApp();
   const profiles = useApp((s) => s.profiles);
   const [newRequested, setNewRequested] = useState(0);
   const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
   const feedbackOpen = useRef(false);
+
+  const openFeedback = useCallback(() => {
+    if (feedbackOpen.current) return;
+    feedbackOpen.current = true;
+    // Capture the original view before covering it with the feedback form.
+    void api.feedback.capture().catch(() => null).then((screenshot) => setFeedback({ screenshot }));
+  }, []);
 
   useEffect(() => {
     void loadProfiles();
@@ -30,11 +34,19 @@ export function App() {
   useEffect(
     () =>
       onMenuCommand((cmd) => {
-        if (cmd === 'send-feedback' && !feedbackOpen.current) {
-          feedbackOpen.current = true;
-          // Capture the original view before covering it with the feedback form.
-          void api.feedback.capture().catch(() => null).then((screenshot) => setFeedback({ screenshot }));
+        if (cmd === 'close-window') {
+          const state = useApp.getState();
+          if (Object.values(state.gridDrafts).some((draft) => draft.saving)) {
+            window.earthqlBridge.closeWindow(false);
+            state.toast('info', 'Wait for the cell changes to finish saving.');
+          } else {
+            void (async () => {
+              const discard = !Object.keys(state.gridDrafts).length || await state.confirmDiscard();
+              window.earthqlBridge.closeWindow(discard && !Object.values(useApp.getState().gridDrafts).some((draft) => draft.saving));
+            })();
+          }
         }
+        if (cmd === 'send-feedback') openFeedback();
         const s = useApp.getState();
         if (cmd === 'new-connection') {
           s.setScreen('connections');
@@ -42,67 +54,27 @@ export function App() {
         }
         if (cmd === 'new-sql-tab' && s.activeProfileId && s.connections[s.activeProfileId]) s.newSqlTab(s.activeProfileId);
         if (cmd === 'close-tab' && s.activeTabId && s.screen === 'workspace') s.closeTab(s.activeTabId);
+        if (cmd === 'close-all-tabs' && s.screen === 'workspace') s.closeTabs(s.tabs.map(({ id }) => id));
+        if (cmd === 'refresh' && s.activeTabId && s.screen === 'workspace') s.refreshTab(s.activeTabId);
       }),
-    [],
+    [openFeedback],
   );
+
 
   return (
     <div className="app">
+      <div className="app-content">
       {screen === 'connections' ? (
         <ConnectionsScreen key={newRequested} initialNew={newRequested > 0} />
       ) : (
         <>
           <Sidebar />
           <main className="main">
-            <div className="main-top drag">
-              <div className="tabs no-drag">
-                {tabs.map((t) => {
-                  const p = profileOf(t.profileId)?.profile;
-                  const { title, sub, icon } = tabTitle(t);
-                  return (
-                    <div
-                      key={t.id}
-                      className={`tab${t.id === activeTabId ? ' active' : ''}`}
-                      style={{ '--env': p?.env.color ?? 'transparent' } as CSSProperties}
-                      onMouseDown={(e) => {
-                        if (e.button === 1) closeTab(t.id);
-                        else activateTab(t.id);
-                      }}
-                      title={`${p?.name ?? ''}${p?.env.name ? ` (${p.env.name})` : ''} — ${t.kind === 'table' ? describePath(t.object) : title}`}
-                    >
-                      <span className="stripe" />
-                      <span className="muted">{icon}</span>
-                      <span className="t-title">
-                        {title}
-                        <div className="t-sub">
-                          {p?.name}
-                          {sub ? ` · ${sub}` : ''}
-                        </div>
-                      </span>
-                      <span
-                        className="t-close"
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          closeTab(t.id);
-                        }}
-                      >
-                        ×
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-              {activeProfileId && (
-                <button className="btn small ghost no-drag" style={{ margin: '0 8px 6px' }} title="New SQL editor (⌘T)" onClick={() => newSqlTab(activeProfileId)}>
-                  ＋ SQL
-                </button>
-              )}
-            </div>
+            <TabBar />
             <div className="tab-content">
               {tabs.length === 0 && (
                 <div className="welcome" style={{ height: '100%' }}>
-                  <h2>{activeProfileId ? profileOf(activeProfileId)?.profile.name : 'EarthQL'}</h2>
+                  <h2>{activeProfileId ? connectionName(activeProfileId) : 'EarthQL'}</h2>
                   <p>Pick a table or view in the sidebar, or open a SQL editor.</p>
                   <div className="row">
                     {activeProfileId && (
@@ -121,10 +93,10 @@ export function App() {
                 <div key={t.id} className="tab-pane" hidden={t.id !== activeTabId}>
                   <ErrorBoundary label="this tab">
                   {t.kind === 'table' && (
-                    <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} active={t.id === activeTabId} />
+                    <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} active={t.id === activeTabId} refreshVersion={t.refreshVersion} />
                   )}
-                  {t.kind === 'sql' && <SqlTab profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={t.id === activeTabId} />}
-                  {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} />}
+                  {t.kind === 'sql' && <SqlTab profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={t.id === activeTabId} refreshVersion={t.refreshVersion} />}
+                  {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} refreshVersion={t.refreshVersion} />}
                   </ErrorBoundary>
                 </div>
               ))}
@@ -132,6 +104,12 @@ export function App() {
           </main>
         </>
       )}
+      </div>
+      <footer className="app-footer">
+        <UpdateButton />
+        <span className="spacer" />
+        <button className="btn small no-drag" onClick={openFeedback}>Send Feedback</button>
+      </footer>
       <div className="toasts">
         {toasts.map((t) => (
           <div key={t.id} className={`toast ${t.kind}`}>
@@ -139,6 +117,16 @@ export function App() {
           </div>
         ))}
       </div>
+      {discardPrompt && (
+        <Modal narrow title="Unsaved changes" onClose={() => resolveDiscard(false)} footer={<>
+          <button className="btn" autoFocus onClick={() => resolveDiscard(false)}>Cancel</button>
+          <button className="btn danger" onClick={() => resolveDiscard(true)}>Discard changes</button>
+        </>}>
+          <p>Discard all changes?</p>
+          <p className="muted small">Your unsaved cell edits will be lost.</p>
+          <div className="discard-save-tip">Save your changes with <kbd>⌘S</kbd> or the <strong>Save</strong> button above the table.</div>
+        </Modal>
+      )}
       {feedback && <FeedbackDialog screenshot={feedback.screenshot} onClose={() => { feedbackOpen.current = false; setFeedback(null); }} />}
       <span hidden>{profiles.length}</span>
     </div>
