@@ -105,6 +105,14 @@ describe('TablePlus connection transfer', () => {
     expect(importTablePlusProfiles(JSON.parse(payload), profiles)).toMatchObject({ profiles: [], duplicates: 3, skipped: 0 });
   });
 
+  it('does not export an SSH profile as a direct TablePlus connection', () => {
+    const [pg] = importTablePlusProfiles([postgres], []).profiles;
+    const ssh = { host: 'bastion', port: 22, user: 'user', hostKeyFingerprint: `SHA256:${'a'.repeat(43)}` };
+    const { rows, skipped } = exportTablePlusProfiles([{ ...pg, ssh }]);
+    expect(rows).toEqual([]);
+    expect(skipped).toBe(1);
+  });
+
   it('reads the published RNCryptor v3 vector and rejects a wrong password or forged tag', async () => {
     // https://github.com/RNCryptor/RNCryptor-Spec/blob/master/vectors/v3/password (One byte)
     const vector = Buffer.from('03010001 02030405 06070102 03040506 07080203 04050607 08090a0b 0c0d0e0f 0001a1f8 730e0bf4 80eb7b70 f690abf2 1e029514 164ad3c4 74a51b30 c7eaa1ca 545b7de3 de5b010a cbad0a9a 13857df6 96a8'.replaceAll(' ', ''), 'hex');

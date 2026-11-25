@@ -32,12 +32,22 @@ export interface EnvironmentTag {
   color: string;
 }
 
+export interface SshTunnelOptions {
+  host: string;
+  port: number;
+  user: string;
+  /** OpenSSH SHA256 host-key fingerprint, verified before authentication. */
+  hostKeyFingerprint: string;
+}
+
 interface ProfileBase {
   id: string;
   name: string;
   env: EnvironmentTag;
   createdAt: number;
   updatedAt: number;
+  /** SSH agent authentication; supported for PostgreSQL, MySQL and SQL Server. */
+  ssh?: SshTunnelOptions;
 }
 
 export interface PostgresProfile extends ProfileBase {

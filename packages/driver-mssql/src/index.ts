@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { Connection as TdsConnection, Request as TdsRequest } from 'tedious';
 import {
   CATEGORY_HINTS,
   Dialect,
@@ -631,6 +632,27 @@ class MssqlConnection implements DriverConnection {
     return new MssqlCursor(this, stmt, ctx, opts);
   }
 
+  openExplainCursor(stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions): QueryCursor {
+    const tls = this.profile.tls;
+    return new MssqlExplainCursor(new TdsConnection({
+      server: this.profile.host,
+      authentication: { type: 'default', options: { userName: this.profile.user, password: this.secrets.password ?? '' } },
+      options: {
+        port: this.profile.port || 1433,
+        database: ctx.database || this.profile.database || undefined,
+        connectTimeout: 15000,
+        requestTimeout: 0,
+        encrypt: tls.mode !== 'disable',
+        trustServerCertificate: tls.mode === 'require',
+        serverName: tls.serverName || undefined,
+        cryptoCredentialsDetails: tls.mode === 'verify' && tls.caCert ? { ca: tls.caCert } : undefined,
+        appName: 'EarthQL',
+        useUTC: true,
+        enableArithAbort: true,
+      },
+    }), stmt.sql, opts);
+  }
+
   async close(): Promise<void> {
     const pools = [...this.pools.values()];
     this.pools.clear();
@@ -645,6 +667,84 @@ function formatSysType(name: string, maxLength: number, precision: number, scale
   if (['decimal', 'numeric'].includes(n)) return `${n}(${precision},${scale})`;
   if (['datetime2', 'datetimeoffset', 'time'].includes(n)) return `${n}(${scale})`;
   return n;
+}
+
+class MssqlExplainCursor implements QueryCursor {
+  private cancelled = false;
+  private closed = false;
+  private started = false;
+  private failure?: Error;
+
+  constructor(private readonly connection: TdsConnection, private readonly sql: string, private readonly opts?: CursorOptions) {
+    connection.on('error', (error: Error) => { this.failure = error; });
+  }
+
+  private waitFor(action: (done: (error?: Error | null) => void) => void): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const ended = () => done(new Error('SQL Server connection ended while generating the plan.'));
+      const done = (error?: Error | null) => {
+        this.connection.removeListener('error', done);
+        this.connection.removeListener('end', ended);
+        if (error) reject(error); else resolve();
+      };
+      this.connection.once('error', done);
+      this.connection.once('end', ended);
+      try { action(done); } catch (error) {
+        done(error instanceof Error ? error : new Error(String(error)));
+      }
+    });
+  }
+
+  private async batch(text: string): Promise<string[]> {
+    if (this.cancelled) throw makeError('cancelled', 'Query plan cancelled.');
+    if (this.failure) throw this.failure;
+    const rows: string[] = [];
+    await this.waitFor((done) => {
+      const request = new TdsRequest(text, (error) => done(error));
+      request.on('row', (columns) => {
+        if (columns[0]?.value != null) rows.push(String(columns[0].value));
+      });
+      this.connection.execSqlBatch(request);
+    });
+    return rows;
+  }
+
+  async fetch(_maxRows: number): Promise<CursorChunk> {
+    if (this.started) throw makeError('config', 'The query plan has already been fetched.');
+    this.started = true;
+    try {
+      this.opts?.onPhase?.('connecting');
+      await this.waitFor((done) => this.connection.connect(done));
+      await this.batch('SET SHOWPLAN_XML ON');
+      this.opts?.onPhase?.('running');
+      const plans = await this.batch(this.sql);
+      return {
+        columns: [{ name: 'Query plan', type: 'xml', kind: 'text' }],
+        rows: plans.map((plan) => [plan]),
+        done: true,
+        command: 'SHOWPLAN_XML',
+      };
+    } catch (error) {
+      if (this.cancelled) throw makeError('cancelled', 'Query plan cancelled.');
+      throw error;
+    } finally {
+      await this.close();
+    }
+  }
+
+  async cancel(): Promise<CancelRequestResult> {
+    if (this.closed) return 'not-running';
+    this.cancelled = true;
+    await this.close();
+    return 'requested';
+  }
+
+  async close(): Promise<void> {
+    if (!this.closed) {
+      this.closed = true;
+      this.connection.close();
+    }
+  }
 }
 
 class MssqlCursor implements QueryCursor {

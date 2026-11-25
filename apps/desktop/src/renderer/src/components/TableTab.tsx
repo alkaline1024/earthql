@@ -31,6 +31,7 @@ import type { TableImportFormat } from '../../../shared/api';
 import { api, errorInfo, uid } from '../api';
 import type { GridRowsClipboard } from '../grid-clipboard';
 import { gridChangesForSave, gridDraftRowCount, insertCell, newGridRow, pastedGridRows, stageGridDeletes } from '../grid-inserts';
+import { parseSavedFilters, savedFiltersKey, type SavedFilter } from '../saved-filters';
 import { noteError, profileOf, useApp } from '../store';
 import { DataGrid, type GridChoice, type GridEditing, type TableGridActions } from './DataGrid';
 import { ContextBar } from './ContextBar';
@@ -293,6 +294,12 @@ function DataView({
   const filterPanel = useRef<HTMLDivElement>(null);
   const [focusFilter, setFocusFilter] = useState(0);
   const [sort, setSort] = useState<Sort | undefined>();
+  const savedProfileId = useApp((s) => s.connections[profileId]?.profileId ?? profileId);
+  const storageKey = savedFiltersKey(savedProfileId, object);
+  const [savedFilters, setSavedFilters] = useState<SavedFilter[]>([]);
+  const [savedFiltersError, setSavedFiltersError] = useState(false);
+  const [selectedFilter, setSelectedFilter] = useState('');
+  const [filterName, setFilterName] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageSize, setPageSize] = useState(100);
   const [result, setResult] = useState<BrowseResult | null>(null);
@@ -309,6 +316,17 @@ function DataView({
   const draft = useApp((s) => s.gridDrafts[tabId]);
   const setDraft = useApp((s) => s.setGridDraft);
   const toast = useApp((s) => s.toast);
+  useEffect(() => {
+    try {
+      setSavedFilters(parseSavedFilters(localStorage.getItem(storageKey)));
+      setSavedFiltersError(false);
+      setSelectedFilter('');
+    } catch (error) {
+      setSavedFilters([]);
+      setSavedFiltersError(true);
+      toast('error', `Saved filters could not be loaded: ${errorInfo(error).message}`);
+    }
+  }, [storageKey, toast]);
   const driver = profileOf(profileId)?.profile.driver;
   const status = useApp((s) => s.connections[profileId]?.status);
   const editable = useMemo(() => editBlocked || !structure?.gridUpdate || status === 'lost' ? null : gridPrimaryKey(structure), [editBlocked, structure, status]);
@@ -653,6 +671,17 @@ function DataView({
     if (draftFilters[index].applied) commitFilters(next);
     else setDraftFilters(next);
   }
+  function writeSavedFilters(update: (current: SavedFilter[]) => SavedFilter[]) {
+    try {
+      const next = update(parseSavedFilters(localStorage.getItem(storageKey)));
+      localStorage.setItem(storageKey, JSON.stringify(next));
+      setSavedFilters(next);
+      return true;
+    } catch (error) {
+      toast('error', `Saved filters could not be saved: ${errorInfo(error).message}`);
+      return false;
+    }
+  }
 
   const page = Math.floor(offset / pageSize) + 1;
   const rowsShown = result?.rows.length ?? 0;
@@ -677,6 +706,22 @@ function DataView({
         >
           ＋ Filter
         </button>
+        <button className="btn small" disabled={savedFiltersError || (!filters.length && !sort)} onClick={() => setFilterName('')}>Save filters…</button>
+        {savedFilters.length > 0 && <>
+          <select className="select" aria-label="Saved filters" value={selectedFilter} onChange={(event) => setSelectedFilter(event.target.value)}>
+            <option value="">Saved filters…</option>
+            {savedFilters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <button className="btn small" disabled={!selectedFilter} onClick={() => {
+            const item = savedFilters.find((saved) => saved.id === selectedFilter);
+            if (!item) return;
+            commitFilters(item.filters.map((filter) => ({ ...filter, applied: filter })));
+            setSort(item.sort);
+          }}>Load</button>
+          <button className="btn small" disabled={!selectedFilter} onClick={() => {
+            if (writeSavedFilters((current) => current.filter((item) => item.id !== selectedFilter))) setSelectedFilter('');
+          }}>Delete</button>
+        </>}
         {filters.length > 0 && <span className="pill info">{filters.length} filter{filters.length > 1 ? 's' : ''} applied</span>}
         {sort && (
           <span className="pill info">
@@ -709,6 +754,22 @@ function DataView({
         </span>
       </div>
       {draft?.error && <ErrorView error={draft.error} compact />}
+      {filterName !== null && <Modal title="Save filters" narrow onClose={() => setFilterName(null)}>
+        <form onSubmit={(event) => {
+          event.preventDefault();
+          const name = filterName.trim();
+          if (!name) return;
+          const item = { id: uid(), name, filters: filters.map(snapshotOf), sort };
+          if (writeSavedFilters((current) => [...current, item])) { setSelectedFilter(item.id); setFilterName(null); }
+        }}>
+          <label>Name<input className="input" style={{ width: '100%', marginTop: 6 }} autoFocus value={filterName}
+            onChange={(event) => setFilterName(event.target.value)} /></label>
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+            <button type="button" className="btn" onClick={() => setFilterName(null)}>Cancel</button>
+            <button type="submit" className="btn primary" disabled={!filterName.trim()}>Save</button>
+          </div>
+        </form>
+      </Modal>}
       {insertBlocked && (
         <div className="banner" style={{ background: 'var(--bg-sunken)', borderBottomColor: 'var(--line)' }}>
           <span className="muted">Insert unavailable:</span> {insertBlocked}

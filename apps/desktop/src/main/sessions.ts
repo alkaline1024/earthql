@@ -6,6 +6,7 @@ import {
   csvRows,
   ctxForObject,
   isReadOnlyStatement,
+  leadingKeyword,
   makeError,
   runBrowse,
   runGridDeletes,
@@ -44,6 +45,7 @@ import { mssqlDriver } from '@earthql/driver-mssql';
 import type { ConnectionScope, ExportOptions, ExportResult, ExportScope, HistoryEntry, OpenConnection, RunResponse } from '../shared/api';
 import { getSecrets } from './keychain';
 import { addHistory, loadProfiles } from './store';
+import { openSshTunnel } from './ssh-tunnel';
 
 export const DRIVERS: Record<DriverId, DriverModule> = {
   postgres: postgresDriver,
@@ -57,6 +59,7 @@ interface Live {
   scope?: ConnectionScope;
   secrets: Secrets;
   conn: DriverConnection;
+  closeConnection(): Promise<void>;
   structures: Map<string, TableStructure>;
 }
 
@@ -98,6 +101,20 @@ export class SessionManager {
     return DRIVERS[profile.driver].connect(profile, secrets);
   }
 
+  async createManagedConnection(profile: ConnectionProfile, secrets: Secrets): Promise<{ conn: DriverConnection; close(): Promise<void> }> {
+    const tunnel = profile.ssh ? await openSshTunnel(profile) : undefined;
+    try {
+      const target = tunnel && profile.driver !== 'databricks'
+        ? { ...profile, host: '127.0.0.1', port: tunnel.port, tls: { ...profile.tls, serverName: profile.tls.serverName || profile.host } }
+        : profile;
+      const conn = this.createConnection(target, secrets);
+      return { conn, close: async () => { try { await conn.close(); } finally { await tunnel?.close(); } } };
+    } catch (error) {
+      await tunnel?.close();
+      throw error;
+    }
+  }
+
   open(profileId: string): Promise<OpenConnection> {
     return this.openSession(profileId, profileId);
   }
@@ -135,10 +152,13 @@ export class SessionManager {
     if (missing.length && profile.driver === 'databricks') {
       throw makeError('config', `No ${missing.join(', ')} is saved for this profile. Edit the profile to enter it.`);
     }
-    const conn = this.createConnection(profile, secrets);
     const ticket = { profileId };
     this.opening.set(sessionId, ticket);
+    let managed: Awaited<ReturnType<SessionManager['createManagedConnection']>> | undefined;
     try {
+      managed = await this.createManagedConnection(profile, secrets);
+      const { conn } = managed;
+      if (this.opening.get(sessionId) !== ticket) throw makeError('cancelled', 'Opening the connection was cancelled.');
       const roots = await conn.listChildren(null);
       if (scope) {
         const selected = roots.find((node) => node.kind === scope.kind && node.name === scope.name);
@@ -148,11 +168,14 @@ export class SessionManager {
       if (this.opening.get(sessionId) !== ticket) throw makeError('cancelled', 'Opening the connection was cancelled.');
       await this.closeLive(sessionId);
       if (this.opening.get(sessionId) !== ticket) throw makeError('cancelled', 'Opening the connection was cancelled.');
-      this.live.set(sessionId, { profile, scope, secrets, conn, structures: new Map() });
+      this.live.set(sessionId, { profile, scope, secrets, conn, closeConnection: managed.close, structures: new Map() });
       return { sessionId, profileId, scope, capabilities: conn.capabilities(), defaultContext: conn.defaultContext() };
     } catch (e) {
-      await conn.close().catch(() => undefined);
-      throw conn.classifyError(e);
+      if (managed) {
+        await managed.close().catch(() => undefined);
+        throw managed.conn.classifyError(e);
+      }
+      throw e;
     } finally {
       if (this.opening.get(sessionId) === ticket) this.opening.delete(sessionId);
     }
@@ -167,7 +190,7 @@ export class SessionManager {
     const l = this.live.get(sessionId);
     this.live.delete(sessionId);
     for (const [id, c] of this.cursors) if (c.profileId === sessionId) await this.closeCursor(id);
-    if (l) await l.conn.close().catch(() => undefined);
+    if (l) await l.closeConnection().catch((error) => console.error('Connection cleanup failed.', error));
   }
 
   async closeProfile(profileId: string): Promise<void> {
@@ -256,10 +279,19 @@ export class SessionManager {
   // SQL editor
   // ---------------------------------------------------------------------------
 
-  async run(profileId: string, runId: string, sql: string, ctx: ExecContext, limit: number): Promise<RunResponse> {
+  async run(profileId: string, runId: string, sql: string, ctx: ExecContext, limit: number, explain = false): Promise<RunResponse> {
     const l = this.get(profileId);
+    if (explain) {
+      const statements = splitStatements(sql, l.conn.driver);
+      if (l.conn.driver !== 'mssql' || !l.conn.openExplainCursor || statements.length !== 1 ||
+          !['SELECT', 'WITH'].includes(leadingKeyword(statements[0].sql, l.conn.driver)) ||
+          !isReadOnlyStatement(statements[0].sql, l.conn.driver)) {
+        throw makeError('config', 'Select exactly one read-only SQL Server query to explain.');
+      }
+    }
     const run = new ScriptRun(l.conn, sql, ctx, {
       limit,
+      openCursor: explain ? l.conn.openExplainCursor!.bind(l.conn) : undefined,
       onPhase: (phase: QueryPhase, statementIndex: number) => this.emit('query:phase', { runId, phase, statementIndex }),
     });
     this.runs.set(runId, run);
@@ -279,7 +311,7 @@ export class SessionManager {
         if (out.results.some((r) => r.status === 'error')) return 'error';
         return 'ok';
       };
-      if (out.results.length > 0) {
+      if (!explain && out.results.length > 0) {
         addHistory(l.profile.id, {
           id: runId,
           sql,
@@ -290,6 +322,7 @@ export class SessionManager {
           statements: out.results.length,
         });
       }
+      if (explain) for (const result of out.results) result.sql = `SHOWPLAN_XML ${result.sql}`;
       return { runId, results: out.results, cancel: out.cancel };
     } finally {
       this.runs.delete(runId);

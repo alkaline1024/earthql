@@ -194,6 +194,7 @@ export interface EarthQLApi {
     open(profileId: string): Promise<OpenConnection>;
     openSeparate(sessionId: string, name: string): Promise<OpenConnection>;
     reconnect(sessionId: string): Promise<OpenConnection>;
+    test(sessionId: string): Promise<TestResult>;
     close(sessionId: string): Promise<void>;
     closeProfile(profileId: string): Promise<void>;
   };
@@ -209,6 +210,7 @@ export interface EarthQLApi {
   };
   query: {
     run(profileId: string, runId: string, sql: string, ctx: ExecContext, limit: number): Promise<RunResponse>;
+    explain(profileId: string, runId: string, sql: string, ctx: ExecContext, limit: number): Promise<RunResponse>;
     cancel(runId: string): Promise<CancelRequestResult>;
     more(cursorId: string, maxRows: number): Promise<CursorChunk>;
     closeCursor(cursorId: string): Promise<void>;

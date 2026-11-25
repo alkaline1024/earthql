@@ -18,6 +18,8 @@ import { effectiveAccelerator, matchesAccelerator } from '../../../shared/keybin
 import { QueryLibrary } from './QueryLibrary';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ObjectIcon } from './ObjectIcon';
+import { ObjectSearch } from './ObjectSearch';
+import { SchemaTools } from './SchemaTools';
 import { addTreeNodesToBookmarks, createFavoriteFolder, favoriteEntryKey, moveFavoriteEntries, moveFavoriteEntry, removeFavoriteFolder, selectFavoriteKeys, type FavoriteEntry, type FavoriteFolder, type TableFavorite } from '../table-favorites';
 
 function nodePathAsContainer(n: TreeNode): Partial<ObjectPath> {
@@ -53,7 +55,10 @@ export function Sidebar() {
   const connectionListRef = useRef<HTMLElement>(null);
   const [draggingConnection, setDraggingConnection] = useState<string | null>(null);
   const [connectionDrop, setConnectionDrop] = useState<{ id: string; after: boolean } | null>(null);
+  const [testingConnection, setTestingConnection] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  const [searchConnection, setSearchConnection] = useState<string | null>(null);
+  const [schemaTool, setSchemaTool] = useState<{ profileId: string; mode: 'diagram' | 'compare' } | null>(null);
   const [split, setSplit] = useState<{ sessionId: string; name?: string } | null>(null);
   const [connectionMenu, setConnectionMenu] = useState<{ sessionId: string; x: number; y: number; trigger: HTMLElement; alignRight: boolean; details?: boolean } | null>(null);
   const connectionMenuRef = useRef<HTMLDivElement>(null);
@@ -110,6 +115,17 @@ export function Sidebar() {
       const error = state.connectErrors[sessionId];
       if (error) state.toast('error', error.message);
     }
+  }
+
+  async function testConnection(sessionId: string) {
+    setTestingConnection(sessionId);
+    try {
+      const result = await api.connection.test(sessionId);
+      if (result.ok) useApp.getState().toast('ok', `Connection test succeeded${result.serverVersion ? ` (${result.serverVersion})` : ''}.`);
+      else useApp.getState().toast('error', result.error?.message ?? 'Connection test failed.');
+    } catch (error) {
+      useApp.getState().toast('error', errorInfo(error).message);
+    } finally { setTestingConnection(null); }
   }
 
   return (
@@ -238,7 +254,7 @@ export function Sidebar() {
               {conn.status === 'lost' && (
                 <div className="banner" style={{ margin: '0 8px 6px', borderRadius: 6 }}>
                   <span className="grow">Connection lost.</span>
-                  <button className="btn small" onClick={() => void connect(activeProfileId)}>
+                  <button className="btn small" onClick={() => void reconnectConnection(activeProfileId)}>
                     Reconnect
                   </button>
                 </div>
@@ -247,6 +263,7 @@ export function Sidebar() {
               <div className="sidebar-items" hidden={section !== 'items'}>
               <div className="sidebar-filter">
                 <input className="input" style={{ width: '100%' }} placeholder="Filter loaded objects" value={filter} onChange={(e) => setFilter(e.target.value)} />
+                <button className="btn small" disabled={conn.status !== 'connected'} onClick={() => setSearchConnection(activeProfileId)}>Search all…</button>
               </div>
               <div className="sidebar-item-panels">
               <TableTreeSelection key={activeProfileId} profileId={activeProfileId} filter={filter}
@@ -294,6 +311,7 @@ export function Sidebar() {
           <dl>
             <dt>Host</dt><dd>{menuProfile.host}{'port' in menuProfile ? `:${menuProfile.port}` : ''}</dd>
             <dt>Driver</dt><dd>{DRIVER_LABELS[menuProfile.driver]}</dd>
+            <dt>Status</dt><dd>{menuConnection.status === 'connected' ? 'Connected (last known)' : 'Connection lost'}</dd>
             <dt>{menuProfile.driver === 'databricks' ? 'Catalog' : 'Database'}</dt>
             <dd>{menuConnection.defaultContext.database ?? menuConnection.defaultContext.catalog ?? '—'}</dd>
             {'user' in menuProfile && <><dt>User</dt><dd>{menuProfile.user}</dd></>}
@@ -306,6 +324,8 @@ export function Sidebar() {
             <button type="button" className="btn" onClick={() => { setConnectionMenu(null); void disconnect(connectionMenu.sessionId); }}>Disconnect</button>
             <span className="spacer" />
             <button type="button" className="btn" disabled={!!connecting[connectionMenu.sessionId]} onClick={() => void reconnectConnection(connectionMenu.sessionId)}>Reconnect</button>
+            <button type="button" className="btn" disabled={!!testingConnection} title="Open a separate test connection; the current session is not changed."
+              onClick={() => void testConnection(connectionMenu.sessionId)}>{testingConnection === connectionMenu.sessionId ? 'Testing…' : 'Test connection'}</button>
             <button type="button" className="btn" onClick={() => {
               useApp.setState({ editProfileId: menuProfile.id });
               setScreen('connections');
@@ -335,6 +355,12 @@ export function Sidebar() {
             setSplit({ sessionId: connectionMenu.sessionId });
             setConnectionMenu(null);
           }}>Open Separate Connection…</button>
+          <button type="button" role="menuitem" disabled={menuConnection.status !== 'connected'} onClick={() => {
+            setSchemaTool({ profileId: connectionMenu.sessionId, mode: 'diagram' }); setConnectionMenu(null);
+          }}>ER Diagram…</button>
+          <button type="button" role="menuitem" disabled={menuConnection.status !== 'connected'} onClick={() => {
+            setSchemaTool({ profileId: connectionMenu.sessionId, mode: 'compare' }); setConnectionMenu(null);
+          }}>Compare Schemas…</button>
           <button type="button" role="menuitem" disabled={!!connecting[connectionMenu.sessionId]}
             onClick={() => void reconnectConnection(connectionMenu.sessionId)}>Reconnect</button>
           <button type="button" role="menuitem" onClick={() => {
@@ -344,6 +370,9 @@ export function Sidebar() {
         </div>
       )}
       {split && <SplitConnectionDialog sessionId={split.sessionId} initialName={split.name} onClose={() => setSplit(null)} />}
+      {searchConnection && connections[searchConnection] && <ObjectSearch key={searchConnection} profileId={searchConnection}
+        scope={connections[searchConnection].scope} onClose={() => setSearchConnection(null)} />}
+      {schemaTool && connections[schemaTool.profileId] && <SchemaTools profileId={schemaTool.profileId} mode={schemaTool.mode} onClose={() => setSchemaTool(null)} />}
     </aside>
   );
 }

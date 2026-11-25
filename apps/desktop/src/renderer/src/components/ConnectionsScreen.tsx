@@ -92,6 +92,13 @@ export function validateProfile(p: ConnectionProfile, secrets: Secrets, storedSe
   } else {
     if (!p.user.trim()) errs.push('Username');
     if (p.driver === 'postgres' && !p.database.trim()) errs.push('Database');
+    if (p.ssh) {
+      if (!p.ssh.host.trim()) errs.push('SSH host');
+      if (!p.ssh.user.trim()) errs.push('SSH user');
+      if (!Number.isInteger(p.ssh.port) || p.ssh.port < 1 || p.ssh.port > 65535) errs.push('SSH port');
+      if (!/^SHA256:[A-Za-z0-9+/]{43}=?$/.test(p.ssh.hostKeyFingerprint)) errs.push('SSH host-key fingerprint');
+      if (p.driver === 'mysql' && p.tls.mode === 'verify') errs.push('SSH with MySQL certificate verification is unsupported');
+    }
   }
   return errs;
 }
@@ -589,7 +596,7 @@ function ConnectionTransfer({ mode, selectedIds, onClose }: {
       } else {
         const result = await api.profiles.exportTablePlus(scope === 'selected' ? selectedIds : null, password);
         if (!result) return;
-        toast('ok', `Exported ${result.exported} ${result.exported === 1 ? 'connection' : 'connections'}.${result.skipped ? ` ${result.skipped} Databricks ${result.skipped === 1 ? 'profile' : 'profiles'} skipped.` : ''}`, 'Export');
+        toast('ok', `Exported ${result.exported} ${result.exported === 1 ? 'connection' : 'connections'}.${result.skipped ? ` ${result.skipped} unsupported ${result.skipped === 1 ? 'profile' : 'profiles'} skipped.` : ''}`, 'Export');
         if (result.reviewTls) toast('info', `Review SSL settings in TablePlus for ${result.reviewTls} ${result.reviewTls === 1 ? 'connection' : 'connections'}.`);
       }
       onClose();
@@ -606,7 +613,7 @@ function ConnectionTransfer({ mode, selectedIds, onClose }: {
         <p className="muted" style={{ margin: 0 }}>
           PostgreSQL, MySQL, and SQL Server profiles. {isImport
             ? 'Database passwords included in encrypted TablePlus files are saved to Keychain. Existing passwords are kept.'
-            : 'Enter database passwords separately in TablePlus after transfer.'}
+            : 'Enter database passwords separately in TablePlus after transfer. SSH-tunneled and Databricks profiles are skipped.'}
         </p>
         {!isImport && selectedIds && (
           <label>
@@ -911,6 +918,24 @@ function ProfileEditor({
                 onChange={(e) => set('port', Number(e.target.value.replace(/\D/g, '')) || 0)}
               />
             </div>
+            <span className="lbl">SSH tunnel</span>
+            <label className="check"><input type="checkbox" checked={!!p.ssh}
+              onChange={(event) => set('ssh', event.target.checked ? { host: '', port: 22, user: '', hostKeyFingerprint: '' } : undefined)} />Connect through SSH</label>
+            {p.ssh && <>
+              <span className="lbl">SSH host</span>
+              <div className="row">
+                <input className="input mono grow" aria-label="SSH host" value={p.ssh.host} onChange={(event) => set('ssh', { ...p.ssh, host: event.target.value })} />
+                <span className="muted">Port</span>
+                <input className="input mono" style={{ width: 80 }} aria-label="SSH port" value={p.ssh.port || ''}
+                  onChange={(event) => set('ssh', { ...p.ssh, port: Number(event.target.value.replace(/\D/g, '')) || 0 })} />
+              </div>
+              <span className="lbl">SSH user</span>
+              <input className="input mono" aria-label="SSH user" value={p.ssh.user} onChange={(event) => set('ssh', { ...p.ssh, user: event.target.value })} />
+              <span className="lbl">Host-key fingerprint</span>
+              <input className="input mono" aria-label="SSH host-key fingerprint" value={p.ssh.hostKeyFingerprint} placeholder="SHA256:…"
+                onChange={(event) => set('ssh', { ...p.ssh, hostKeyFingerprint: event.target.value.trim() })} />
+              <span className="help">Verify the SHA256 fingerprint independently. Authentication uses keys loaded into the SSH agent available to EarthQL.</span>
+            </>}
             <span className="lbl">Database</span>
             <div className="row">
               <input

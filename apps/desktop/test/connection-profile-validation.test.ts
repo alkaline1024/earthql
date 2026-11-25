@@ -30,6 +30,15 @@ describe('connection profile validation', () => {
     expect(validateProfile({ ...profile, database: 'master' }, {}, [])).toEqual([]);
   });
 
+  it('requires verified SSH endpoint details and rejects unsupported MySQL TLS verification', () => {
+    const profile: ConnectionProfile = { ...base, driver: 'mysql',
+      ssh: { host: '', port: 0, user: '', hostKeyFingerprint: '' } };
+    expect(validateProfile(profile, {}, [])).toEqual(['SSH host', 'SSH user', 'SSH port', 'SSH host-key fingerprint']);
+    const valid = { ...profile, ssh: { host: 'bastion', port: 22, user: 'user', hostKeyFingerprint: `SHA256:${'a'.repeat(43)}` } };
+    expect(validateProfile(valid, {}, [])).toEqual([]);
+    expect(validateProfile({ ...valid, tls: { mode: 'verify' } }, {}, [])).toContain('SSH with MySQL certificate verification is unsupported');
+  });
+
   describe('Databricks JDBC import', () => {
     const jdbc = 'jdbc:databricks://adb-example.14.azuredatabricks.net:443/default;httpPath=/sql/1.0/warehouses/example;AuthMech=11;Auth_Flow=1;OAuth2ClientId=client;OAuth2Secret=secret=part';
 

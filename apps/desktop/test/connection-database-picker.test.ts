@@ -8,11 +8,12 @@ const mocks = vi.hoisted(() => ({
   deleteSecret: vi.fn(),
   loadProfiles: vi.fn(),
   saveProfiles: vi.fn(),
+  showMessageBox: vi.fn(),
 }));
 
 vi.mock('electron', () => ({
   ipcMain: { handle: (name: string, handler: (...args: unknown[]) => Promise<unknown>) => mocks.handlers.set(name, handler) },
-  BrowserWindow: {}, dialog: {}, app: {},
+  BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] }, dialog: { showMessageBox: mocks.showMessageBox }, app: {},
 }));
 vi.mock('../src/main/keychain', () => ({
   getSecrets: mocks.getSecrets, deleteAllSecrets: vi.fn(), deleteSecret: mocks.deleteSecret, setSecret: mocks.setSecret,
@@ -99,6 +100,86 @@ describe('database picker IPC', () => {
     expect(await mocks.handlers.get('profiles:test')!(null, profile, { password: 'new password' }))
       .toEqual({ ok: true, value: { ok: true, steps: [] } });
     expect(mocks.getSecrets).not.toHaveBeenCalled();
+  });
+
+  it('tests an open connection without reconnecting or replacing its session', async () => {
+    const conn = mssqlDriver.connect(profile, {});
+    vi.spyOn(conn, 'listChildren').mockResolvedValue([]);
+    vi.spyOn(conn, 'test').mockResolvedValue({ ok: true, steps: [], serverVersion: 'fixture' });
+    vi.spyOn(conn, 'close').mockResolvedValue(undefined);
+    const sessions = new SessionManager(() => {});
+    vi.spyOn(sessions, 'createConnection').mockReturnValue(conn);
+    await sessions.open(profile.id);
+    registerIpc(sessions);
+    expect(await mocks.handlers.get('connection:test')!(null, profile.id))
+      .toEqual({ ok: true, value: { ok: true, steps: [], serverVersion: 'fixture' } });
+    expect(sessions.get(profile.id).conn).toBe(conn);
+    expect(conn.close).not.toHaveBeenCalled();
+    await sessions.close(profile.id);
+  });
+
+  it('requires confirmation before SQL on production and does not execute when cancelled', async () => {
+    const prod = { ...profile, env: { name: 'Production', color: '#f00' } };
+    mocks.loadProfiles.mockReturnValue([prod]);
+    const conn = mssqlDriver.connect(prod, {});
+    vi.spyOn(conn, 'listChildren').mockResolvedValue([]);
+    vi.spyOn(conn, 'close').mockResolvedValue(undefined);
+    const sessions = new SessionManager(() => {});
+    vi.spyOn(sessions, 'createConnection').mockReturnValue(conn);
+    await sessions.open(prod.id);
+    const run = vi.spyOn(sessions, 'run').mockResolvedValue({ runId: 'run', results: [], cancel: 'none' });
+    registerIpc(sessions);
+    mocks.showMessageBox.mockResolvedValueOnce({ response: 0 }).mockResolvedValueOnce({ response: 1 });
+    const handler = mocks.handlers.get('query:run')!;
+    const cancelled = await handler(null, prod.id, 'run', 'SELECT 1', {}, 100);
+    expect(cancelled).toMatchObject({ ok: false, error: { category: 'cancelled' } });
+    expect(run).not.toHaveBeenCalled();
+    expect(await handler(null, prod.id, 'run', 'SELECT 1', {}, 100)).toMatchObject({ ok: true });
+    expect(run).toHaveBeenCalledOnce();
+    await sessions.close(prod.id);
+  });
+
+  it('validates SQL Server explain requests in the main process', async () => {
+    const conn = mssqlDriver.connect(profile, {});
+    vi.spyOn(conn, 'listChildren').mockResolvedValue([]);
+    vi.spyOn(conn, 'close').mockResolvedValue(undefined);
+    const explain = vi.spyOn(conn, 'openExplainCursor').mockReturnValue({
+      fetch: async () => ({ columns: [{ name: 'plan', type: 'xml', kind: 'text' }], rows: [['<plan/>']], done: true }),
+      cancel: async () => 'not-running', close: async () => {},
+    });
+    const sessions = new SessionManager(() => {});
+    vi.spyOn(sessions, 'createConnection').mockReturnValue(conn);
+    await sessions.open(profile.id);
+    registerIpc(sessions);
+    const handler = mocks.handlers.get('query:explain')!;
+    expect(await handler(null, profile.id, 'bad', 'SELECT 1; DELETE FROM t', {}, 100)).toMatchObject({ ok: false });
+    expect(await handler(null, profile.id, 'bad', 'DELETE FROM t', {}, 100)).toMatchObject({ ok: false });
+    expect(explain).not.toHaveBeenCalled();
+    const result = await handler(null, profile.id, 'good', 'SELECT 1', {}, 100);
+    expect(result).toMatchObject({ ok: true, value: { results: [{ sql: 'SHOWPLAN_XML SELECT 1', rows: [['<plan/>']] }] } });
+    expect(explain).toHaveBeenCalledOnce();
+    await sessions.close(profile.id);
+  });
+
+  it('rejects a production confirmation if the profile changed and leaves writes untouched', async () => {
+    const prod = { ...profile, env: { name: 'Production', color: '#f00' } };
+    mocks.loadProfiles.mockReturnValue([prod]);
+    const conn = mssqlDriver.connect(prod, {});
+    vi.spyOn(conn, 'listChildren').mockResolvedValue([]);
+    vi.spyOn(conn, 'close').mockResolvedValue(undefined);
+    const sessions = new SessionManager(() => {});
+    vi.spyOn(sessions, 'createConnection').mockReturnValue(conn);
+    await sessions.open(prod.id);
+    const save = vi.spyOn(sessions, 'saveGrid');
+    registerIpc(sessions);
+    mocks.showMessageBox.mockImplementationOnce(async () => {
+      mocks.loadProfiles.mockReturnValue([{ ...prod, updatedAt: prod.updatedAt + 1 }]);
+      return { response: 1 };
+    });
+    const result = await mocks.handlers.get('write:saveGrid')!(null, prod.id, { name: 'orders' }, { updates: [], inserts: [], deletes: [] });
+    expect(result).toMatchObject({ ok: false, error: { category: 'cancelled' } });
+    expect(save).not.toHaveBeenCalled();
+    await sessions.close(prod.id);
   });
 });
 

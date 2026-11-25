@@ -1,4 +1,4 @@
-import type { DriverConnection, QueryCursor } from './driver';
+import type { CursorOptions, DriverConnection, QueryCursor, StatementInput } from './driver';
 import { CATEGORY_HINTS, makeError } from './errors';
 import { isReadOnlyStatement, leadingKeyword, splitStatements } from './sql-split';
 import { kindFromTypeName } from './values';
@@ -20,6 +20,7 @@ export interface RunOptions {
   /** Max rows loaded per row-returning statement. */
   limit: number;
   onPhase?: (phase: QueryPhase, statementIndex: number) => void;
+  openCursor?: (stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions) => QueryCursor;
 }
 
 export interface OpenResult {
@@ -87,7 +88,7 @@ export class ScriptRun {
         continue;
       }
       const started = Date.now();
-      const cursor = this.conn.openCursor({ sql }, this.ctx, { onPhase: (p) => this.opts.onPhase?.(p, i) });
+      const cursor = (this.opts.openCursor ?? this.conn.openCursor.bind(this.conn))({ sql }, this.ctx, { onPhase: (p) => this.opts.onPhase?.(p, i) });
       this.current = cursor;
       let keepOpen = false;
       try {

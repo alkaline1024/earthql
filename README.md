@@ -18,15 +18,19 @@ npm run dist:mac     # build apps/desktop/release/EarthQL-<version>-arm64-mac.dm
 Requires Node 20+ and macOS 12+. `dist:mac:universal` builds Apple Silicon + Intel; it needs the x64 optional
 native packages (`@napi-rs/keyring-darwin-x64`, Databricks kernel) installed as well.
 
+In **Settings → Appearance**, choose the Classic or Modern UI style independently of the color theme. Classic is the default; both choices are saved on this Mac.
+
 For SQL Server, leave Database empty to connect to the login's default database, enter a database, or use **…** to search the databases visible to the login. Azure SQL Database lists databases through `master` and connects to each database separately; database visibility and access depend on the login's permissions.
 
 For Databricks, paste an OAuth M2M JDBC URL (`AuthMech=11;Auth_Flow=1`) into **JDBC URL** to fill the connection fields. Review the settings and save; the client secret is stored in Keychain, not in the profile or the URL field. Other JDBC options and authentication flows are not imported.
+
+PostgreSQL, MySQL and SQL Server profiles can connect through an SSH tunnel using a key loaded in the SSH agent (`SSH_AUTH_SOCK`). Enter the SSH host, user, port and independently verified OpenSSH SHA256 host-key fingerprint. EarthQL rejects a fingerprint mismatch and does not store SSH private keys or passwords. MySQL's Verify certificate mode is not supported through a tunnel; Databricks tunneling is not supported.
 
 ## Move connections between EarthQL and TablePlus
 
 - **TablePlus → EarthQL:** Export in TablePlus for macOS with a file password. Select **Include database passwords** to transfer them. In EarthQL, open **Connections → Import**, enter the file password, and choose the `.tableplusconnection` file. EarthQL saves included database passwords to Keychain for new or matching profiles that need a password. `Connections.plist` imports profile settings only.
 - **EarthQL → TablePlus:** Open **Connections → Export**, choose the selected connection or all supported connections, and set a file password. On the TablePlus welcome screen, choose **Import Connection → From File** and use the same password. Enter each database password in TablePlus after import.
-- PostgreSQL, MySQL, and SQL Server profiles transfer. EarthQL imports connections from groups into its flat list, skips duplicate profiles, and skips profiles that require unsupported SSH, socket, or authentication settings. Review TLS settings after transfer when using custom certificates or SQL Server.
+- PostgreSQL, MySQL, and SQL Server profiles transfer. EarthQL imports connections from groups into its flat list, skips duplicate profiles, and skips profiles that require unsupported SSH, socket, or authentication settings. EarthQL SSH-tunneled profiles are skipped on export. Review TLS settings after transfer when using custom certificates or SQL Server.
 
 ## Table filters
 
@@ -41,6 +45,22 @@ Click **SQL** at the left of the filter footer to inspect the executed SQL and b
 ## Bookmarked tables and views
 
 Right-click a table or view and choose **Add to Bookmarks**, or drag one or more selected tables or views from the object tree directly into Bookmarks or a bookmark folder. Opening a bookmark also expands the object tree and selects the original table or view. Bookmarks and the section's open or closed state are saved per connection profile. Use **New Folder** or the Bookmarks context menu to create folders, rename or delete folders, and move bookmarks between folders. Select multiple bookmarks with ⌘-click or ⇧-click to move them together. Drag entries to reorder them or into a folder, and drop a bookmark on the Bookmarks heading to move it back to the top level. Drag the divider above Bookmarks to resize the section. Deleting a folder keeps its bookmarks. Bookmarks can be removed from the section or the context menu. Right-click an object or container and choose **Copy full path** to copy its dot-separated path; multiple selected tables or views are copied one per line.
+
+## Search and saved queries
+
+Use **Search all…** in the sidebar to search accessible tables and views across databases and schemas, or search their column names. Column searches read metadata for each object and may take time; inaccessible locations are listed separately. A separately scoped connection searches only its scope.
+
+In table data, **Save filters…** saves the currently applied filters and sort for that table and connection profile on this Mac. Saved filter values are stored locally. Select a saved filter to load or delete it.
+
+Query history can be filtered by SQL text, status, date, and open connection. Saved queries can act as snippets: write placeholders such as `{{customer_id}}`, then choose **Fill variables…**. Values are substituted as SQL text, not bound parameters; quote and escape them and review the SQL before running it.
+
+**Explain** shows an estimated plan for the selected or current read-only query on PostgreSQL, MySQL, Databricks, and SQL Server. It does not use `ANALYZE` or execute the query. SQL Server uses an isolated connection and requires SHOWPLAN permission. Connection details show the last-known status and offer a test using a separate connection; this test does not replace the current session.
+
+Connection actions also offer **Schema Compare** and **ER Diagram**. Choose a database and schema to compare object, column, index, and constraint metadata, or view foreign-key relationships. Inaccessible or unsupported metadata is reported as incomplete; comparisons do not generate migrations or compare view definitions and triggers.
+
+## Production confirmation
+
+Connections whose environment label contains `prod` require confirmation before table writes, imports, table actions, and SQL execution. All SQL is confirmed, including queries that appear read-only, because database functions can have side effects. Cancellation sends no operation to the database. This is a warning, not a substitute for database permissions.
 
 ## Layout
 
@@ -122,4 +142,4 @@ Open **Help → Send Feedback…** to report a bug or suggest an improvement. Yo
 - Minimum macOS version (configured as 12.0) and whether Intel builds are required.
 - Database versions for acceptance (tested here: PostgreSQL 17, MySQL 8.4, SQL Server 2022).
 - Databricks cloud provider, SQL warehouse, and credentials for both auth modes — needed to run the acceptance checks.
-- VPN / SSH tunnel requirements (SSH tunnels are not implemented).
+- VPN requirements.

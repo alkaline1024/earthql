@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { isEarthQLError, secretFieldsFor, type BrowseRequest, type Cell, type ConnectionProfile, type ErrorInfo, type GridChanges, type GridRowDelete, type GridRowUpdate, type ObjectPath, type ResultColumn, type SecretField, type Secrets } from '@earthql/core';
-import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
+import type { ExportScope, IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret } from './keychain';
 import { SessionManager } from './sessions';
 import { executeTableAction, saveStructure } from './table-actions';
-import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob } from './table-files';
+import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob, tableImportTarget } from './table-files';
+import { confirmProductionOperation } from './production-guard';
 import { exportConnections, importConnections } from './connection-transfer';
 import { readTableGroupFile, saveTableGroupFile } from './table-group-files';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
@@ -86,26 +87,28 @@ export function registerIpc(sessions: SessionManager): void {
 
   handle('profiles:test', null, async (profile: ConnectionProfile, secrets: Secrets) => {
     const merged = draftSecrets(profile, secrets ?? {});
-    const conn = sessions.createConnection(profile, merged);
+    const managed = await sessions.createManagedConnection(profile, merged);
+    const { conn } = managed;
     try {
       return await conn.test();
     } catch (e) {
       return { ok: false, steps: [], error: conn.classifyError(e) };
     } finally {
-      await conn.close().catch(() => undefined);
+      await managed.close().catch((error) => console.error('Connection cleanup failed.', error));
     }
   });
 
   handle('profiles:databases', null, async (profile: ConnectionProfile, secrets: Secrets) => {
     if (profile.driver !== 'mssql') throw new Error('Database selection is only available for SQL Server.');
     const merged = draftSecrets(profile, secrets ?? {});
-    const conn = sessions.createConnection(profile, merged);
+    const managed = await sessions.createManagedConnection(profile, merged);
+    const { conn } = managed;
     try {
       return await conn.listChildren(null);
     } catch (e) {
       throw conn.classifyError(e);
     } finally {
-      await conn.close();
+      await managed.close();
     }
   });
 
@@ -113,6 +116,7 @@ export function registerIpc(sessions: SessionManager): void {
   handle('connection:open', 0, (profileId: string) => sessions.open(profileId));
   handle('connection:openSeparate', 0, (sessionId: string, name: string) => sessions.openSeparate(sessionId, name));
   handle('connection:reconnect', 0, (sessionId: string) => sessions.reconnect(sessionId));
+  handle('connection:test', 0, (sessionId: string) => sessions.get(sessionId).conn.test());
   handle('connection:close', 0, (sessionId: string) => sessions.close(sessionId));
   handle('connection:closeProfile', 0, (profileId: string) => sessions.closeProfile(profileId));
   handle('meta:children', 0, (profileId: string, node) => sessions.get(profileId).conn.listChildren(node as any));
@@ -121,10 +125,20 @@ export function registerIpc(sessions: SessionManager): void {
   handle('meta:completion', 0, (profileId: string, ctx) => sessions.get(profileId).conn.completionSchema(ctx as any));
   handle('data:browse', 0, (profileId: string, req) => sessions.browse(profileId, req as any));
   handle('data:previewBrowse', 0, (profileId: string, req: BrowseRequest) => sessions.previewBrowse(profileId, req));
-  handle('write:saveGrid', 0, (profileId: string, object: ObjectPath, changes: GridChanges) => sessions.saveGrid(profileId, object, changes));
+  handle('write:saveGrid', 0, async (profileId: string, object: ObjectPath, changes: GridChanges) => {
+    await confirmProductionOperation(sessions, profileId, 'Save table changes');
+    return sessions.saveGrid(profileId, object, changes);
+  });
 
   // --- queries ----------------------------------------------------------------
-  handle('query:run', 0, (profileId: string, runId: string, sql: string, ctx, limit: number) => sessions.run(profileId, runId, sql, ctx as any, limit));
+  handle('query:run', 0, async (profileId: string, runId: string, sql: string, ctx, limit: number) => {
+    await confirmProductionOperation(sessions, profileId, 'Run SQL');
+    return sessions.run(profileId, runId, sql, ctx as any, limit);
+  });
+  handle('query:explain', 0, async (profileId: string, runId: string, sql: string, ctx, limit: number) => {
+    await confirmProductionOperation(sessions, profileId, 'Explain SQL');
+    return sessions.run(profileId, runId, sql, ctx as any, limit, true);
+  });
   handle('query:cancel', null, (runId: string) => sessions.cancel(runId));
   handle('query:more', null, (cursorId: string, maxRows: number) => sessions.more(cursorId, maxRows));
   handle('query:closeCursor', null, (cursorId: string) => sessions.closeCursor(cursorId));
@@ -143,11 +157,23 @@ export function registerIpc(sessions: SessionManager): void {
 
   // --- writes -----------------------------------------------------------------
   handle('write:previewInsert', 0, (profileId: string, spec) => sessions.previewInsert(profileId, spec as any));
-  handle('write:insert', 0, (profileId: string, spec) => sessions.insert(profileId, spec as any));
-  handle('write:updateCells', 0, (profileId: string, object: ObjectPath, rows: GridRowUpdate[]) => sessions.updateCells(profileId, object, rows));
-  handle('write:deleteRows', 0, (profileId: string, object: ObjectPath, rows: GridRowDelete[]) => sessions.deleteRows(profileId, object, rows));
+  handle('write:insert', 0, async (profileId: string, spec) => {
+    await confirmProductionOperation(sessions, profileId, 'Insert rows');
+    return sessions.insert(profileId, spec as any);
+  });
+  handle('write:updateCells', 0, async (profileId: string, object: ObjectPath, rows: GridRowUpdate[]) => {
+    await confirmProductionOperation(sessions, profileId, 'Update rows');
+    return sessions.updateCells(profileId, object, rows);
+  });
+  handle('write:deleteRows', 0, async (profileId: string, object: ObjectPath, rows: GridRowDelete[]) => {
+    await confirmProductionOperation(sessions, profileId, 'Delete rows');
+    return sessions.deleteRows(profileId, object, rows);
+  });
   handle('write:previewCreate', 0, (profileId: string, spec) => sessions.previewCreate(profileId, spec as any));
-  handle('write:create', 0, (profileId: string, spec) => sessions.create(profileId, spec as any));
+  handle('write:create', 0, async (profileId: string, spec) => {
+    await confirmProductionOperation(sessions, profileId, 'Create a table');
+    return sessions.create(profileId, spec as any);
+  });
 
   // --- history / saved --------------------------------------------------------
   handle('history:list', 0, (sessionId: string) => loadHistory(sessions.savedProfileId(sessionId)));
@@ -170,16 +196,28 @@ export function registerIpc(sessions: SessionManager): void {
     writeSaved(profileId, loadSaved(profileId).filter((x) => x.id !== id));
   });
 
-  handle('tableActions:saveStructure', 0, (profileId: string, object: ObjectPath, edits: import('../shared/table-actions').StructureEdit[]) => saveStructure(sessions, profileId, object, edits));
-  handle('tableActions:run', 0, (profileId: string, request) => executeTableAction(sessions, profileId, request as any));
+  handle('tableActions:saveStructure', 0, async (profileId: string, object: ObjectPath, edits: import('../shared/table-actions').StructureEdit[]) => {
+    await confirmProductionOperation(sessions, profileId, 'Change table structure');
+    return saveStructure(sessions, profileId, object, edits);
+  });
+  handle('tableActions:run', 0, async (profileId: string, request) => {
+    await confirmProductionOperation(sessions, profileId, 'Run a table action');
+    return executeTableAction(sessions, profileId, request as any);
+  });
   handle('tableFiles:export', 1, (id: string, profileId: string, items, options) => exportTables(sessions, id, profileId, items as any, options as any));
   handle('tableFiles:read', 0, (profileId: string, object, format, options) => readTableImport(sessions, profileId, object as any, format as any, options as any));
-  handle('tableFiles:import', null, (token: string, mapping, emptyAsNull: boolean) => importTable(sessions, token, mapping as any, emptyAsNull));
+  handle('tableFiles:import', null, async (token: string, mapping, emptyAsNull: boolean) => {
+    const target = tableImportTarget(token);
+    await confirmProductionOperation(sessions, target.profileId, 'Import data or SQL');
+    return importTable(sessions, token, mapping as any, emptyAsNull);
+  });
   handle('tableFiles:release', null, (token: string) => releaseTableImport(token));
   handle('tableFiles:cancel', null, (id: string) => cancelTableFileJob(id, sessions));
 
   // --- export -----------------------------------------------------------------
   handle('export:run', null, async (exportId: string, scope, opts) => {
+    const exportScope = scope as ExportScope;
+    if (exportScope.kind === 'rerun') await confirmProductionOperation(sessions, exportScope.profileId, 'Re-run SQL for export');
     const o = opts as { suggestedName: string; nullText: string; bom: boolean };
     // Automated end-to-end tests only: write to a fixed directory instead of showing the save panel.
     const testDir = process.env.EARTHQL_E2E_EXPORT_DIR;

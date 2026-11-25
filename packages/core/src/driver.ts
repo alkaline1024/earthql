@@ -61,6 +61,8 @@ export interface DriverConnection {
   getStructure(object: ObjectPath): Promise<TableStructure>;
   getPrivileges(object: ObjectPath): Promise<ObjectPrivileges>;
   openCursor(stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions): QueryCursor;
+  /** Estimated plan on an isolated session; the statement must never execute. */
+  openExplainCursor?(stmt: StatementInput, ctx: ExecContext, opts?: CursorOptions): QueryCursor;
   /** Apply grid statements on a single connection in an atomic transaction. */
   applyGridUpdates?(object: ObjectPath, statements: StatementInput[]): Promise<void>;
   /** Execute a compiled table-management batch on one database session. */

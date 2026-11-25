@@ -3,6 +3,7 @@ import { QueryLibrary } from './QueryLibrary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isReadOnlyStatement,
+  cellToText,
   splitStatements,
   statementAt,
   type CompletionSchema,
@@ -16,6 +17,7 @@ import type { RunResponse } from '../../../shared/api';
 import { api, errorInfo, uid } from '../api';
 import { LIMITS, NO_LIMIT, noteError, profileOf, useApp } from '../store';
 import { formatSql, uglifySql } from '../sql-format';
+import { explainStatement, formatPlanCell } from '../query-plan';
 import { ContextBar } from './ContextBar';
 import { ContextSubmenu } from './ContextSubmenu';
 import { DataGrid } from './DataGrid';
@@ -73,6 +75,7 @@ export function SqlTab({
   const [response, setResponse] = useState<RunResponse | null>(null);
   const [results, setResults] = useState<StatementResult[]>([]);
   const [activeResult, setActiveResult] = useState(0);
+  const [lastRunMode, setLastRunMode] = useState<'current' | 'all' | 'explain'>('current');
   const [runError, setRunError] = useState<ErrorInfo | null>(null);
   const sidebarSection = useApp((s) => s.sidebarSection);
   const sidebarProfileId = useApp((s) => s.activeProfileId);
@@ -120,7 +123,7 @@ export function SqlTab({
   resultsRef.current = results;
   useEffect(() => () => closeCursors(resultsRef.current), [closeCursors]);
 
-  const execute = useCallback(async (mode: 'current' | 'all') => {
+  const execute = useCallback(async (mode: 'current' | 'all' | 'explain') => {
     if (!profile || runRef.current) return;
     const selection = editor.current?.getSelection() ?? '';
     let text: string;
@@ -134,14 +137,21 @@ export function SqlTab({
       text = statementAt(splitStatements(whole, profile.driver), cursor)?.sql ?? whole;
     }
     if (!text.trim()) return;
+    if (mode === 'explain') {
+      try { text = explainStatement(text, profile.driver); }
+      catch (error) { toast('error', errorInfo(error).message); return; }
+    }
     const statements = splitStatements(text, profile.driver).length;
     if (statements === 0) return;
     closeCursors(results);
+    setLastRunMode(mode);
     const runId = uid();
     setRun({ runId, started: Date.now(), phase: 'connecting', statementIndex: 0, statements, cancel: 'none' });
     setRunError(null);
     try {
-      const res = await api.query.run(profileId, runId, text, ctx, limit);
+      const res = mode === 'explain' && profile.driver === 'mssql'
+        ? await api.query.explain(profileId, runId, text, ctx, limit)
+        : await api.query.run(profileId, runId, text, ctx, limit);
       setResponse(res);
       setResults(res.results);
       // Show the first failed / cancelled statement, else the last one with rows, else the last.
@@ -159,7 +169,7 @@ export function SqlTab({
       setRun(null);
       setHistoryVersion((v) => v + 1);
     }
-  }, [profile, profileId, ctx, limit, results, closeCursors]);
+  }, [profile, profileId, ctx, limit, results, closeCursors, toast]);
 
   const cancel = useCallback(async () => {
     const r = runRef.current;
@@ -317,6 +327,8 @@ export function SqlTab({
                 )}
               </SplitButton>
             )}
+            <button className="btn small" disabled={!!run} title="Show the estimated plan for the selected or current query"
+              onClick={() => void execute('explain')}>Explain</button>
             <ToolbarDropdown
               trigger={limit === NO_LIMIT ? 'No limit' : `${limit.toLocaleString()} rows`}
               title={`Limit rows fetched (${profile.driver === 'mssql' ? 'TOP' : 'LIMIT'})`}
@@ -403,6 +415,11 @@ export function SqlTab({
               </div>
             )}
             {current && (
+              <>
+              {lastRunMode === 'explain' && current.status === 'ok' && current.rows && <div style={{ overflow: 'auto', maxHeight: '50%', padding: 12 }}>
+                <b>Estimated query plan</b>
+                <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{current.rows.map((row) => row.map((cell) => formatPlanCell(cellToText(cell, 'NULL'))).join('\t')).join('\n')}</pre>
+              </div>}
               <ResultView
                 key={`${response?.runId}-${current.index}`}
                 result={current}
@@ -410,8 +427,9 @@ export function SqlTab({
                 onLoadMore={() => void loadMore(current)}
                 loadingMore={loadingMore}
                 onExport={() => setExporting(current)}
-                onRefresh={() => void execute(sqlRunDefault)}
+                onRefresh={() => void execute(lastRunMode)}
               />
+              </>
             )}
           </div>
         </div>

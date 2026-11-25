@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from 'react';
-import { LIMITS, NO_LIMIT, type Theme, useApp } from '../store';
+import { LIMITS, NO_LIMIT, type Theme, type UiStyle, useApp } from '../store';
 import { Modal } from './common';
 import { ShortcutSettings } from './ShortcutSettings';
 
@@ -15,6 +15,8 @@ const THEME_OPTIONS: { id: Theme; label: string; bg: string; primary?: string; s
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
+  const uiStyle = useApp((s) => s.uiStyle);
+  const setUiStyle = useApp((s) => s.setUiStyle);
   const defaultRowLimit = useApp((s) => s.defaultRowLimit);
   const setDefaultRowLimit = useApp((s) => s.setDefaultRowLimit);
   const beautifyUppercase = useApp((s) => s.beautifyUppercase);
@@ -37,6 +39,22 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
       <div className="col" style={{ gap: 20 }}>
         <section>
           <h3 className="settings-h">Appearance</h3>
+          <div className="ui-style-options" role="radiogroup" aria-label="UI style">
+            {([
+              { id: 'classic', label: 'Classic', description: 'The familiar EarthQL layout' },
+              { id: 'modern', label: 'Modern', description: 'Softer surfaces and streamlined controls' },
+            ] satisfies { id: UiStyle; label: string; description: string }[]).map((style) => (
+              <label key={style.id} className={`ui-style-option${uiStyle === style.id ? ' on' : ''}`}>
+                <input type="radio" name="ui-style" value={style.id} checked={uiStyle === style.id}
+                  onChange={() => setUiStyle(style.id)} />
+                <span className={`ui-style-preview ${style.id}`} aria-hidden="true">
+                  <span /><span /><span />
+                </span>
+                <span className="ui-style-copy"><strong>{style.label}</strong><span>{style.description}</span></span>
+              </label>
+            ))}
+          </div>
+          <h4 className="theme-heading">Color theme</h4>
           <div className="theme-swatch-grid" role="radiogroup" aria-label="Theme">
             {THEME_OPTIONS.map((t) => (
               <button

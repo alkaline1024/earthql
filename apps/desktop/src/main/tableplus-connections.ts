@@ -148,7 +148,7 @@ export function importTablePlusProfiles(data: unknown, existing: ConnectionProfi
 
 export function exportTablePlusProfiles(profiles: ConnectionProfile[]) {
   const rows = profiles.flatMap((profile) => {
-    if (profile.driver === 'databricks') return [];
+    if (profile.driver === 'databricks' || profile.ssh) return [];
     const { driver, name, host, port, user, database, env, tls } = profile;
     const mode = tls.mode === 'disable' ? 1 : tls.mode === 'require' ? 2 : driver === 'mysql' ? 4 : 5;
     return [{
@@ -172,6 +172,6 @@ export function exportTablePlusProfiles(profiles: ConnectionProfile[]) {
       ServerNameIndication: tls.serverName ?? '',
     }];
   });
-  const reviewTls = profiles.filter((p) => p.driver !== 'databricks' && (p.tls.caCert || (p.driver === 'mssql' && p.tls.mode !== 'require'))).length;
+  const reviewTls = profiles.filter((p) => p.driver !== 'databricks' && !p.ssh && (p.tls.caCert || (p.driver === 'mssql' && p.tls.mode !== 'require'))).length;
   return { rows, skipped: profiles.length - rows.length, reviewTls };
 }

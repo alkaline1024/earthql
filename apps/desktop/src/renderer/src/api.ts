@@ -48,6 +48,7 @@ export const api: EarthQLApi = {
     open: (id) => call('connection:open', id),
     openSeparate: (id, name) => call('connection:openSeparate', id, name),
     reconnect: (id) => call('connection:reconnect', id),
+    test: (id) => call('connection:test', id),
     close: (id) => call('connection:close', id),
     closeProfile: (id) => call('connection:closeProfile', id),
   },
@@ -63,6 +64,7 @@ export const api: EarthQLApi = {
   },
   query: {
     run: (id, runId, sql, ctx, limit) => call('query:run', id, runId, sql, ctx, limit),
+    explain: (id, runId, sql, ctx, limit) => call('query:explain', id, runId, sql, ctx, limit),
     cancel: (runId) => call('query:cancel', runId),
     more: (cursorId, n) => call('query:more', cursorId, n),
     closeCursor: (cursorId) => call('query:closeCursor', cursorId),

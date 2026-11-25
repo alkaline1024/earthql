@@ -42,6 +42,11 @@ export function cancelTableFileJob(id: string, sessions: SessionManager): void {
   if (job) { job.cancelled = true; void job.cursor?.cancel(); if (job.runId) void sessions.cancel(job.runId); }
 }
 export function releaseTableImport(token: string): void { if (!jobs.has(token)) plans.delete(token); }
+export function tableImportTarget(token: string): { profileId: string; object: ObjectPath } {
+  const plan = plans.get(token);
+  if (!plan || plan.expires < Date.now()) throw makeError('config', 'This import preview expired. Choose the file again.');
+  return { profileId: plan.profileId, object: plan.object };
+}
 
 export async function exportTables(sessions: SessionManager, exportId: string, profileId: string, items: TableExportItem[], options: TableExportOptions): Promise<ExportResult> {
   if (jobs.has(exportId)) throw makeError('config', 'This export is already running.');

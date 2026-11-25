@@ -30,6 +30,7 @@ export const LIMITS = [100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
 export const MAX_CLOSED_TABS = 25;
 
 export type Theme = 'system' | 'light' | 'dark' | 'white' | 'slate' | 'sepia';
+export type UiStyle = 'classic' | 'modern';
 
 export type PaneId = 'main' | 'split';
 
@@ -126,6 +127,9 @@ interface AppState {
   /** Color theme (persisted; 'system' follows the OS). */
   theme: Theme;
   setTheme(theme: Theme): void;
+  /** Visual style, independent of the color theme (persisted). */
+  uiStyle: UiStyle;
+  setUiStyle(style: UiStyle): void;
   /** Shortcuts the user changed from the defaults in shared/keybindings (persisted). null = unbound. */
   keybindings: KeybindingOverrides;
   /** Pass null to unbind; pass undefined-equivalent via resetKeybinding to restore the default. */
@@ -295,6 +299,18 @@ function applyTheme(theme: Theme) {
   }
 }
 
+function loadUiStyle(): UiStyle {
+  try {
+    return localStorage.getItem('earthql.uiStyle') === 'modern' ? 'modern' : 'classic';
+  } catch {
+    return 'classic';
+  }
+}
+
+function applyUiStyle(style: UiStyle) {
+  if (typeof document !== 'undefined') document.documentElement.dataset.uiStyle = style;
+}
+
 function opened(state: AppState, sessionId: string, connection: OpenConnection): Partial<AppState> {
   const root = containerKey(sessionId, {});
   return {
@@ -365,6 +381,8 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
 
 const initialTheme = loadTheme();
 applyTheme(initialTheme);
+const initialUiStyle = loadUiStyle();
+applyUiStyle(initialUiStyle);
 
 export const useApp = create<AppState>((set, get) => ({
   draggedTabId: null,
@@ -582,6 +600,16 @@ export const useApp = create<AppState>((set, get) => ({
     }
     applyTheme(theme);
     set({ theme });
+  },
+  uiStyle: initialUiStyle,
+  setUiStyle(style) {
+    try {
+      localStorage.setItem('earthql.uiStyle', style);
+    } catch {
+      get().toast('error', 'UI style could not be saved.');
+    }
+    applyUiStyle(style);
+    set({ uiStyle: style });
   },
   discardPrompt: null,
   confirmDiscard() {
