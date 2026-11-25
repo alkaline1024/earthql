@@ -120,7 +120,8 @@ export class MssqlDialect extends Dialect {
     const q = this.quoteIdent(column.name);
     // MONEY arrives as a JS number and temporal values as JS Dates (millisecond precision): convert them server-side
     // to keep every digit. DECIMAL/NUMERIC are exact strings already (patched tedious) but converting is harmless.
-    if (/^(decimal|numeric|money|smallmoney)\b/i.test(column.type)) return `CONVERT(VARCHAR(64), ${q}) AS ${q}`;
+    if (/^(money|smallmoney)\b/i.test(column.type)) return `CONVERT(VARCHAR(64), ${q}, 2) AS ${q}`;
+    if (/^(decimal|numeric)\b/i.test(column.type)) return `CONVERT(VARCHAR(64), ${q}) AS ${q}`;
     if (/^(datetime2|datetimeoffset|time|datetime|smalldatetime|date)\b/i.test(column.type)) return `CONVERT(VARCHAR(40), ${q}, 121) AS ${q}`;
     return q;
   }

@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'electron-vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
+import { releaseKey } from './src/main/update-release';
 import { feedbackEndpointUrl } from './src/shared/feedback';
 
 const root = path.resolve(__dirname, '../..');
@@ -31,14 +32,20 @@ export default defineConfig(({ mode }) => {
   const endpoint = value ? feedbackEndpointUrl(value) : '';
   if (endpoint === null) throw new Error('EARTHQL_FEEDBACK_URL must be a deployed Google Apps Script /exec URL.');
 
+  const publicKey = loadEnv(mode, root, 'EARTHQL_UPDATE_PUBLIC_KEY').EARTHQL_UPDATE_PUBLIC_KEY?.trim() ?? '';
+  if (publicKey) releaseKey(publicKey);
+
   return {
     main: {
-      define: { __EARTHQL_FEEDBACK_URL__: JSON.stringify(endpoint) },
+      define: {
+        __EARTHQL_FEEDBACK_URL__: JSON.stringify(endpoint),
+        __EARTHQL_UPDATE_PUBLIC_KEY__: JSON.stringify(publicKey),
+      },
       resolve: { alias },
       build: {
         externalizeDeps: { exclude: workspace },
         rollupOptions: {
-          external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native', 'electron-updater'],
+          external: ['pg', 'pg-cursor', 'mysql2', 'mssql', '@databricks/sql', '@napi-rs/keyring', 'pg-native'],
         },
       },
     },

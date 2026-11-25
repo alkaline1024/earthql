@@ -247,12 +247,23 @@ for (const t of TARGETS) {
       });
       const firstId = '9007199254740992';
       const secondId = '9007199254740993';
+      const amountType = t.driver.id === 'mssql' ? 'MONEY' : 'DECIMAL(14,4)';
       const read = async () => (await exec(conn, `SELECT note FROM ${qualified} ORDER BY tenant_id, id`)).rows.flat();
-      await exec(conn, `CREATE TABLE ${qualified} (tenant_id INT NOT NULL, id BIGINT NOT NULL, note ${t.textType} NULL, PRIMARY KEY (tenant_id, id))`);
+      await exec(conn, `CREATE TABLE ${qualified} (tenant_id INT NOT NULL, id BIGINT NOT NULL, note ${t.textType} NULL, amount ${amountType} NOT NULL DEFAULT 15.1234, PRIMARY KEY (tenant_id, id))`);
       try {
-        await exec(conn, `INSERT INTO ${qualified} VALUES (1, ${firstId}, 'First'), (1, ${secondId}, NULL), (2, ${secondId}, 'Other tenant')`);
+        await exec(conn, `INSERT INTO ${qualified} (tenant_id, id, note) VALUES (1, ${firstId}, 'First'), (1, ${secondId}, NULL), (2, ${secondId}, 'Other tenant')`);
         const structure = await conn.getStructure(editObject);
         expect(structure.gridUpdate).toBe(true);
+        const browse = () => runBrowse(conn, {
+          object: editObject,
+          filters: [{ column: 'tenant_id', op: '=', value: '1' }],
+          sort: { column: 'id', dir: 'asc' },
+          offset: 0,
+          pageSize: 10,
+        }, structure.columns);
+        const before = await browse();
+        const amount = before.columns.findIndex(({ name }) => name === 'amount');
+        expect(before.rows[0][amount]).toBe('15.1234');
         const text = "O'Brien ☀";
         expect(await runGridUpdates(conn, structure, [row(secondId, null, text)])).toMatchObject({ status: 'ok', rowsAffected: 1 });
         expect(await read()).toEqual(['First', text, 'Other tenant']);
@@ -262,9 +273,12 @@ for (const t of TARGETS) {
         expect(conflict).toMatchObject({ status: 'error', error: { code: 'GRID_CONFLICT' } });
         expect(await read()).toEqual(['First', 'Changed', 'Other tenant']);
 
-        expect(await runGridUpdates(conn, structure, [row(firstId, 'First', ''), row(secondId, 'Changed', null)]))
+        const firstChange = row(firstId, 'First', '');
+        firstChange.changes.push({ column: 'amount', original: '15.1234', value: '15.4321' });
+        expect(await runGridUpdates(conn, structure, [firstChange, row(secondId, 'Changed', null)]))
           .toMatchObject({ status: 'ok', rowsAffected: 2 });
         expect(await read()).toEqual(['', null, 'Other tenant']);
+        expect((await browse()).rows[0][amount]).toBe('15.4321');
       } finally {
         await exec(conn, `DROP TABLE ${qualified}`);
       }

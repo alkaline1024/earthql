@@ -5,14 +5,14 @@ Electron + React + TypeScript. Version 0.1 (first release scope).
 
 ## Install and update
 
-Download the macOS installer from [GitHub Releases](https://github.com/alkaline1024/earthql/releases) and drag EarthQL to **Applications**. In a signed release, use **Help → Check for Updates…** to install a new version. See the [release guide](RELEASING.md) for preparing and publishing a release.
+Download the macOS installer from [GitHub Releases](https://github.com/alkaline1024/earthql/releases) and drag EarthQL to **Applications**. If macOS blocks the first launch, see the [installation steps](RELEASING.md). Use **Help → Check for Updates…** to install new team releases. See the [release guide](RELEASING.md) for preparing and publishing a release.
 
 ## Run
 
 ```bash
 npm install          # also applies patches/ (see "SQL Server DECIMAL" below)
 npm run dev          # start the app with hot reload
-npm run dist:mac     # build release/EarthQL-<version>-arm64.dmg (unsigned unless signing env vars are set)
+npm run dist:mac     # build apps/desktop/release/EarthQL-<version>-arm64-mac.dmg (ad-hoc signed)
 ```
 
 Requires Node 20+ and macOS 12+. `dist:mac:universal` builds Apple Silicon + Intel; it needs the x64 optional

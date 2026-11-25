@@ -30,41 +30,35 @@ jobs:
             }'
       - run: npm ci
       - run: npm run typecheck && npm test
-      - name: Build and verify the signed Mac app
+      - name: Build and verify the ad-hoc Mac app
         env:
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EARTHQL_UPDATE_PUBLIC_KEY: ${{ vars.EARTHQL_UPDATE_PUBLIC_KEY }}
           EARTHQL_FEEDBACK_URL: ${{ vars.EARTHQL_FEEDBACK_URL }}
         run: |
-          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::Missing macOS release credential: $name"
-              exit 1
-            fi
-          done
-          npm run dist:mac -w @earthql/desktop -- --config.forceCodeSigning=true --config.mac.notarize=true
+          if [[ -z "$EARTHQL_UPDATE_PUBLIC_KEY" ]]; then
+            echo '::error::Missing Actions variable EARTHQL_UPDATE_PUBLIC_KEY.'
+            exit 1
+          fi
+          npm run dist:mac -w @earthql/desktop
           app=apps/desktop/release/mac-arm64/EarthQL.app
           codesign --verify --deep --strict "$app"
           signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
-          if [[ "$signature" != *'Authority=Developer ID Application:'* ]]; then
-            echo '::error::Expected a Developer ID Application signature.'
+          if [[ "$signature" != *'Signature=adhoc'* ]]; then
+            echo '::error::Expected an ad-hoc macOS signature.'
             exit 1
           fi
-          xcrun stapler validate "$app"
+      - name: Sign the update manifest
+        env:
+          EARTHQL_UPDATE_PUBLIC_KEY: ${{ vars.EARTHQL_UPDATE_PUBLIC_KEY }}
+          EARTHQL_UPDATE_PRIVATE_KEY: ${{ secrets.EARTHQL_UPDATE_PRIVATE_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/sign-update.mjs "$version" "apps/desktop/release/EarthQL-$version-arm64-mac.zip"
       - name: Create the draft release
         working-directory: apps/desktop/release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          shopt -s nullglob
-          installers=(*.dmg)
-          archives=(*.zip)
-          if [[ ${#installers[@]} -ne 1 || ${#archives[@]} -ne 1 || ! -s latest-mac.yml ]]; then
-            echo '::error::Expected a DMG, an update ZIP, and latest-mac.yml.'
-            exit 1
-          fi
+          version="${GITHUB_REF_NAME#v}"
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes \
-            --title "EarthQL ${GITHUB_REF_NAME#v}" "${installers[@]}" "${archives[@]}" latest-mac.yml *.blockmap
+            --title "EarthQL $version" "EarthQL-$version-arm64-mac.dmg" "EarthQL-$version-arm64-mac.zip" earthql-update.json

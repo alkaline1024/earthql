@@ -1,26 +1,38 @@
 # Release EarthQL for macOS
 
-The release workflow publishes a draft on [GitHub Releases](https://github.com/alkaline1024/earthql/releases) for Apple Silicon Macs. Users open the published `.dmg`, drag EarthQL to **Applications**, and launch it from there. Future versions can be installed using **Help → Check for Updates… → Download Update → Restart and Install**. An existing build without the updater needs a one-time manual install of a signed release with the updater included.
+EarthQL team releases support Apple Silicon. The build uses macOS ad-hoc signing. The update manifests are signed with a separate EarthQL Ed25519 key. The public key is embedded in each release, and only the release workflow needs the private key. Apple Developer Program membership and notarization credentials are unnecessary for this workflow.
 
-## Set up signing once
+## Set up the release key once
 
-Use an Apple Developer Program account to create a **Developer ID Application** certificate. Export the certificate with its private key as a password-protected `.p12`, then create an app-specific password for notarization. Add these repository secrets in **Settings → Secrets and variables → Actions**. [Apple Developer ID](https://developer.apple.com/developer-id/) · [Apple app-specific passwords](https://support.apple.com/en-us/102654)
+With GitHub CLI signed in to an account that can manage this repository’s Actions secrets and variables, run this from the repo root. It generates the key pair in memory and uploads each key directly to the matching GitHub setting.
 
-| GitHub Actions secret | Value |
-| --- | --- |
-| `MAC_CSC_LINK` | Base64 of the `.p12` on one line, for example using `base64 -i certificate.p12 \| tr -d '\n'`. |
-| `MAC_CSC_KEY_PASSWORD` | Password used to export the `.p12`. |
-| `APPLE_ID` | Apple account email. |
-| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password for notarization. |
-| `APPLE_TEAM_ID` | Apple Developer Team ID for the signing identity. |
+```sh
+node --input-type=module <<'NODE'
+import { generateKeyPairSync } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+const args = ['--repo', 'alkaline1024/earthql'];
+execFileSync('gh', ['secret', 'set', 'EARTHQL_UPDATE_PRIVATE_KEY', ...args], {
+  input: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64') + '\n',
+});
+execFileSync('gh', ['variable', 'set', 'EARTHQL_UPDATE_PUBLIC_KEY', ...args], {
+  input: publicKey.export({ format: 'der', type: 'spki' }).toString('base64') + '\n',
+});
+NODE
+```
 
-If Feedback is configured in distributed builds, set the repository **Actions variable** `EARTHQL_FEEDBACK_URL` to the public Apps Script `/exec` URL. This is the CI equivalent of the local `.env` entry. The release workflow uses GitHub’s job token for publishing the draft.
+Run this only for initial setup. Installed versions trust the embedded public key. If the key changes, the team must manually install a new build with the replacement key. Leave the existing repository Actions variable `EARTHQL_FEEDBACK_URL` configured if you want feedback submission in distributed builds.
 
-## Ship a new version
+## Ship a version
 
-1. Bump the desktop workspace version, for example `npm version 0.1.1 -w @earthql/desktop --no-git-tag-version`. Commit the desktop manifest and lockfile together with the release changes.
-2. Push a matching tag such as `v0.1.1`. The workflow builds and verifies Developer ID signing and notarization before it creates a draft.
-3. Review the draft on GitHub and choose **Publish release**. Keep the `.dmg`, `.zip`, `latest-mac.yml`, and generated blockmaps together on the release. The DMG is for the initial installation and the ZIP and update metadata are used by the app updater. [Electron Builder Auto Update](https://www.electron.build/v26/docs/features/auto-update/)
-4. Smoke test using an older signed EarthQL installed in **Applications**. Confirm the app offers the new version, restarts after approval, and shows the new version once open. Keep the bundle ID and signing identity consistent across releases.
+1. Bump the desktop workspace version with a stable version such as `npm version 0.1.1 -w @earthql/desktop --no-git-tag-version`. Commit the desktop manifest and lockfile with the release changes.
+2. Push the matching tag, such as `v0.1.1`. The workflow builds the app, verifies ad-hoc signing, signs the update manifest, and creates a draft.
+3. Review and publish the draft on [GitHub Releases](https://github.com/alkaline1024/earthql/releases). Keep the DMG, ZIP and `earthql-update.json` together. The updater reads public release assets, so team members need no GitHub token. Roll forward with a higher version if a published build needs a fix.
 
-`npm run dist:mac` builds locally without uploading assets. Only publish a build that has been signed and notarized. Use a higher version to roll forward from a faulty release.
+## Install and update
+
+Download the DMG, drag EarthQL to **Applications**, and launch from there. If macOS blocks the first launch, go to **System Settings → Privacy & Security → Open Anyway** after trying to open the app, if permitted by your organization. Approval can be needed again on a new build, depending on macOS and device policy. [Apple’s instructions](https://support.apple.com/en-us/102445)
+
+Existing users need to install the first release that contains the new updater once. Then use **Help → Check for Updates… → Download Update → Restart and Install**. The updater checks the signed manifest, verifies the ZIP against its signed size and SHA-256, and validates the app’s macOS signature, bundle identifier and version before quitting. It needs a writable Applications folder. If the system Applications folder is read-only for your account, install into `~/Applications`.
+
+`npm run dist:mac` builds locally without publishing. Local builds enable the update menu only when built with `EARTHQL_UPDATE_PUBLIC_KEY` in the shell environment or an ignored root `.env`.

@@ -1,9 +1,9 @@
 appId: com.earthql.app
 productName: EarthQL
-publish:
-  provider: github
-  owner: alkaline1024
-  repo: earthql
+artifactName: "${productName}-${version}-${arch}-mac.${ext}"
+extraResources:
+  - from: build/install-update.sh
+    to: install-update.sh
 directories:
   output: release
   buildResources: build
@@ -19,8 +19,9 @@ mac:
   target:
     - target: dmg
     - target: zip
-  # The release workflow requires Developer ID signing and verifies the notarization ticket.
-  hardenedRuntime: true
+  identity: "-"
+  notarize: false
+  hardenedRuntime: false
   gatekeeperAssess: false
 dmg:
   title: EarthQL
