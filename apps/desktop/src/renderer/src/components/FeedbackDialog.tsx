@@ -82,7 +82,7 @@ export function FeedbackDialog({ screenshot, onClose }: { screenshot: string | n
       ) : (
         <div className="col feedback-form">
           <div className="row">
-            <b>{showSettings ? 'Feedback Settings' : 'Tell us what happened or what could improve'}</b>
+            <b>{showSettings ? 'Feedback Settings' : 'I’d love to hear from you!'}</b>
             <span className="spacer" />
             {!settings?.bundled && (
               <button className="btn small ghost" disabled={pending} onClick={() => { setShowSettings(!showSettings); setError(undefined); setKey(''); }}>
@@ -90,6 +90,7 @@ export function FeedbackDialog({ screenshot, onClose }: { screenshot: string | n
               </button>
             )}
           </div>
+          {!showSettings && <span className="muted">Found a bug or have an idea? Even the little things help make EarthQL better.</span>}
           {showSettings ? (
             <>
               <label className="col">Apps Script Web App URL

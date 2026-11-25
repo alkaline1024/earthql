@@ -40,7 +40,7 @@ export function TableActionDialog({ profileId, object, objects, action, onClose 
       const same = (a: ObjectPath, b: ObjectPath) => a.catalog === b.catalog && a.database === b.database && a.schema === b.schema && a.name === b.name;
       const matching = state.tabs.filter((tab) => tab.kind === 'table' && tab.profileId === profileId && successful.some((target) => same(tab.object, target)));
       if (action === 'delete') state.closeTabs(matching.map((tab) => tab.id));
-      if (action === 'truncate') for (const tab of matching) state.refreshTab(tab.id);
+      if (action === 'truncate') for (const tab of matching) state.refreshTab(tab.id, true);
       for (const target of successful) state.refreshTree(profileId, target);
       if (failure) setResult(failure);
       else {

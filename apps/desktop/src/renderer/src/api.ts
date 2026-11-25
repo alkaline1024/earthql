@@ -27,7 +27,11 @@ export const api: EarthQLApi = {
     install: () => call('updates:install'),
     onStatus: (cb) => bridge.on('updates:status', cb as any),
   },
+  keybindings: {
+    apply: (overrides, suspended = false) => call('keybindings:apply', { overrides, suspended }),
+  },
   profiles: {
+    setDefaultDatabase: (id, database) => call('profiles:setDefaultDatabase', id, database),
     list: () => call('profiles:list'),
     importTablePlus: (password) => call('profiles:importTablePlus', password),
     exportTablePlus: (profileId, password) => call('profiles:exportTablePlus', profileId, password),
@@ -56,11 +60,13 @@ export const api: EarthQLApi = {
     closeCursor: (cursorId) => call('query:closeCursor', cursorId),
     onPhase: (cb) => bridge.on('query:phase', cb as any),
     saveFile: (sql, suggestedName) => call('query:saveFile', sql, suggestedName),
+    rowsAsInsert: (id, object, columns, rows) => call('query:rowsAsInsert', id, object, columns, rows),
   },
   write: {
     previewInsert: (id, spec) => call('write:previewInsert', id, spec),
     insert: (id, spec) => call('write:insert', id, spec),
     updateCells: (id, object, rows) => call('write:updateCells', id, object, rows),
+    deleteRows: (id, object, rows) => call('write:deleteRows', id, object, rows),
     previewCreate: (id, spec) => call('write:previewCreate', id, spec),
     create: (id, spec) => call('write:create', id, spec),
   },
@@ -73,7 +79,7 @@ export const api: EarthQLApi = {
     save: (id, q) => call('saved:save', id, q),
     remove: (id, qid) => call('saved:remove', id, qid),
   },
-  tableActions: { run: (profileId, request) => call('tableActions:run', profileId, request) },
+  tableActions: { saveStructure: (id, object, edits) => call('tableActions:saveStructure', id, object, edits), run: (profileId, request) => call('tableActions:run', profileId, request) },
   tableFiles: {
     export: (id, profileId, items, options) => call('tableFiles:export', id, profileId, items, options),
     read: (profileId, object, format, options) => call('tableFiles:read', profileId, object, format, options),

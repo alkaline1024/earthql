@@ -6,8 +6,15 @@ import { connectionName, profileOf, useApp } from '../store';
 import { FILE_NAME_TOKENS, tableFileName } from '../table-file-name';
 import { ErrorView, Modal, Spinner } from './common';
 
-export function TableExportDialog({ profileId, object, selectedObjects, onClose }: { profileId: string; object: ObjectPath; selectedObjects?: ObjectPath[]; onClose: () => void }) {
-  const [items, setItems] = useState<TableExportItem[]>(() => (selectedObjects ?? [object]).map((target) => ({ object: target, data: true, structure: false, drop: false })));
+export function TableExportDialog({ profileId, object, selectedObjects, views = [], onClose }: { profileId: string; object: ObjectPath; selectedObjects?: ObjectPath[]; views?: ObjectPath[]; onClose: () => void }) {
+  const isView = (target: ObjectPath) => views.some((view) => describePath(view) === describePath(target));
+  const defaultItem = (target: ObjectPath, checked: boolean): TableExportItem => ({
+    object: target,
+    data: checked,
+    structure: checked && !isView(target),
+    drop: checked && !isView(target),
+  });
+  const [items, setItems] = useState<TableExportItem[]>(() => (selectedObjects ?? [object]).map((target) => defaultItem(target, true)));
   const [tables, setTables] = useState<ObjectPath[]>(selectedObjects ?? [object]);
   const [loading, setLoading] = useState(true);
   const [listError, setListError] = useState('');
@@ -48,7 +55,7 @@ export function TableExportDialog({ profileId, object, selectedObjects, onClose 
   function toggle(target: ObjectPath, field: 'data' | 'structure' | 'drop', checked: boolean) {
     setItems((current) => {
       const existing = current.find((item) => describePath(item.object) === describePath(target)) ?? { object: target, data: false, structure: false, drop: false };
-      const updated = { ...existing, [field]: checked };
+      const updated = !isSql && field === 'data' ? defaultItem(target, checked) : { ...existing, [field]: checked };
       if (field === 'drop' && checked) updated.structure = true;
       if (field === 'structure' && !checked) updated.drop = false;
       return [...current.filter((item) => describePath(item.object) !== describePath(target)), updated];
@@ -61,7 +68,7 @@ export function TableExportDialog({ profileId, object, selectedObjects, onClose 
       const selected = tables.flatMap((table) => { const item = enabledItems.find((item) => describePath(item.object) === describePath(table)); return item ? [item] : []; });
       const response = await api.tableFiles.export(exportId, profileId, selected, { ...options, suggestedName: fileName });
       setResult(response);
-      if (response.status === 'ok') { toast('ok', `Exported ${response.rows?.toLocaleString()} rows to ${response.path}`); onClose(); }
+      if (response.status === 'ok') { toast('ok', `Exported ${response.rows?.toLocaleString()} rows to ${response.path}`, 'Export'); onClose(); }
     } catch (error) { setResult({ status: 'error', error: errorInfo(error) }); }
     finally { setRunning(false); }
   }
@@ -75,14 +82,14 @@ export function TableExportDialog({ profileId, object, selectedObjects, onClose 
       <fieldset className="table-transfer-fieldset" disabled={running}>
         <div className="table-export-layout">
           <section className="table-export-items" aria-label="Tables to export">
-            <div className="table-export-list-head"><b>Items</b><label className="check"><input ref={allCheckbox} type="checkbox" aria-label="Select all tables" checked={enabledItems.length === tables.length && tables.length > 0} onChange={(event) => setItems(tables.map((table) => ({ object: table, data: event.target.checked, structure: isSql && event.target.checked, drop: false })))} />All</label></div>
+            <div className="table-export-list-head"><b>Items</b><label className="check"><input ref={allCheckbox} type="checkbox" aria-label="Select all tables" checked={enabledItems.length === tables.length && tables.length > 0} onChange={(event) => setItems(tables.map((table) => defaultItem(table, event.target.checked)))} />All</label></div>
             <div className={`table-export-column-head${isSql ? ' with-sql' : ''}`}><span>{object.schema ?? object.database ?? object.catalog ?? 'Tables'}</span>{isSql && <><span title="Create table structure">Structure</span><span title="DROP TABLE before CREATE">Drop</span></>}<span>Data</span></div>
             <div className="table-export-table-list">
               {loading && <span className="muted"><Spinner /> Loading tables…</span>}
               {tables.map((table) => {
                 const item = items.find((item) => describePath(item.object) === describePath(table));
                 return <div key={describePath(table)} className={`table-export-object${isSql ? ' with-sql' : ''}`}><span title={describePath(table)}>▦ {table.name}</span>
-                  {isSql && <><input aria-label={`${table.name}: Structure`} type="checkbox" checked={!!item?.structure} onChange={(event) => toggle(table, 'structure', event.target.checked)} /><input aria-label={`${table.name}: Drop`} type="checkbox" checked={!!item?.drop} onChange={(event) => toggle(table, 'drop', event.target.checked)} /></>}
+                  {isSql && <><input aria-label={`${table.name}: Structure`} type="checkbox" disabled={isView(table)} checked={!!item?.structure} onChange={(event) => toggle(table, 'structure', event.target.checked)} /><input aria-label={`${table.name}: Drop`} type="checkbox" disabled={isView(table)} checked={!!item?.drop} onChange={(event) => toggle(table, 'drop', event.target.checked)} /></>}
                   <input aria-label={`${table.name}: Data`} type="checkbox" checked={!!item?.data} onChange={(event) => toggle(table, 'data', event.target.checked)} /></div>;
               })}
             </div>

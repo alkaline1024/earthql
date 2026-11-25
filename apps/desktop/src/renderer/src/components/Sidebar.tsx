@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
-import type { ErrorInfo, ObjectPath, TreeNode } from '@earthql/core';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { DRIVER_LABELS, type ErrorInfo, type ObjectPath, type TreeNode } from '@earthql/core';
 import { api, errorInfo } from '../api';
-import { connectionName, containerKey, noteError, pinnedTableKey, useApp } from '../store';
-import { TableTreeSelection, useTableTreeSelection } from './TableTreeSelection';
+import { connectionName, containerKey, noteError, pinnedTableKey, useApp, type Theme } from '../store';
+import { TableTreeSelection } from './TableTreeSelection';
+import { useTableTreeSelection } from './table-tree-selection-context';
 import { treeNodeKey } from '../tree-selection';
 import type { TableAction } from '../../../shared/table-actions';
 import { TableImportDialog } from './TableImportDialog';
@@ -10,14 +11,12 @@ import { ContextSubmenu } from './ContextSubmenu';
 import type { TableImportFormat } from '../../../shared/api';
 import { objectHasUnsavedChanges } from '../unsaved-changes';
 import { DriverIcon, EnvBadge, ErrorView, Modal, Spinner, categoryTitle } from './common';
+import { Kbd, useShortcuts } from './Shortcut';
+import { effectiveAccelerator, matchesAccelerator } from '../../../shared/keybindings';
 
-const ICON: Record<TreeNode['kind'], string> = {
-  catalog: '◫',
-  database: '⛁',
-  schema: '▤',
-  table: '▦',
-  view: '◇',
-};
+import { QueryLibrary } from './QueryLibrary';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
+import { ObjectIcon } from './ObjectIcon';
 
 function nodePathAsContainer(n: TreeNode): Partial<ObjectPath> {
   if (n.kind === 'catalog') return { catalog: n.name };
@@ -27,7 +26,13 @@ function nodePathAsContainer(n: TreeNode): Partial<ObjectPath> {
 }
 
 export function Sidebar() {
+  const sidebarWidth = useApp((s) => s.sidebarWidth);
+  const sc = useShortcuts();
+  const section = useApp((s) => s.sidebarSection);
+  const setSection = useApp((s) => s.setSidebarSection);
+  const activeSql = useApp((s) => s.tabs.some((t) => t.id === s.activeTabId && t.kind === 'sql' && t.profileId === s.activeProfileId));
   const { activeProfileId, connections, setActiveProfile, setScreen, newSqlTab, disconnect, connect } = useApp();
+  const connecting = useApp((s) => s.connecting);
   const profiles = useApp((s) => s.profiles);
   const conn = activeProfileId ? connections[activeProfileId] : undefined;
   const summary = profiles.find((p) => p.profile.id === conn?.profileId);
@@ -38,9 +43,13 @@ export function Sidebar() {
   const showSwitcher = openConnections.length > 1;
   const [filter, setFilter] = useState('');
   const [split, setSplit] = useState<{ sessionId: string; name?: string } | null>(null);
-  const [connectionMenu, setConnectionMenu] = useState<{ sessionId: string; x: number; y: number; trigger: HTMLElement; alignRight: boolean } | null>(null);
+  const [connectionMenu, setConnectionMenu] = useState<{ sessionId: string; x: number; y: number; trigger: HTMLElement; alignRight: boolean; details?: boolean } | null>(null);
   const connectionMenuRef = useRef<HTMLDivElement>(null);
   const menuConnection = connectionMenu ? connections[connectionMenu.sessionId] : undefined;
+
+  const menuProfile = profiles.find(({ profile }) => profile.id === menuConnection?.profileId)?.profile;
+  const theme = useApp((s) => s.theme);
+  const setTheme = useApp((s) => s.setTheme);
 
   useLayoutEffect(() => {
     const element = connectionMenuRef.current;
@@ -56,7 +65,7 @@ export function Sidebar() {
     const close = () => setConnectionMenu(null);
     const dismiss = (event: PointerEvent) => {
       if (!(event.target instanceof Node) || connectionMenuRef.current?.contains(event.target)) return;
-      if (connectionMenu.alignRight && connectionMenu.trigger.contains(event.target)) return;
+      if (connectionMenu.trigger.contains(event.target)) return;
       close();
     };
     window.addEventListener('pointerdown', dismiss);
@@ -69,21 +78,31 @@ export function Sidebar() {
     };
   }, [connectionMenu]);
 
-  function openConnectionMenu(event: MouseEvent<HTMLElement>, sessionId: string) {
+  function openConnectionMenu(event: MouseEvent<HTMLElement>, sessionId: string, details = false) {
     event.preventDefault();
     const trigger = event.currentTarget;
     const bounds = trigger.getBoundingClientRect();
-    const alignRight = event.type === 'click';
-    const anchored = alignRight || (event.clientX === 0 && event.clientY === 0);
+    const alignRight = event.type === 'click' && !details;
+    const anchored = details || alignRight || (event.clientX === 0 && event.clientY === 0);
     setConnectionMenu((current) => {
-      if (alignRight && current?.alignRight && current.trigger === trigger) return null;
-      return { sessionId, trigger, alignRight, x: alignRight ? bounds.right : anchored ? bounds.left : event.clientX,
+      if (anchored && current?.trigger === trigger) return null;
+      return { sessionId, trigger, alignRight, details, x: alignRight ? bounds.right : anchored ? bounds.left : event.clientX,
         y: anchored ? bounds.bottom + 4 : event.clientY };
     });
   }
 
+  async function reconnectConnection(sessionId: string) {
+    setConnectionMenu(null);
+    if (!await connect(sessionId)) {
+      const state = useApp.getState();
+      const error = state.connectErrors[sessionId];
+      if (error) state.toast('error', error.message);
+    }
+  }
+
   return (
-    <aside className={`sidebar${showSwitcher ? ' sidebar-with-switcher' : ''}`}>
+    <aside className={`sidebar${showSwitcher ? ' sidebar-with-switcher' : ''}`} style={{ width: sidebarWidth }}>
+      <SidebarResizeHandle />
       <div className="sidebar-top drag">
         <span className="spacer" />
         <button type="button" className="btn small ghost no-drag" title="Connections" onClick={() => setScreen('connections')}>
@@ -105,6 +124,7 @@ export function Sidebar() {
                   type="button"
                   aria-label={name}
                   aria-pressed={id === activeProfileId}
+                  aria-busy={!!connecting[id]}
                   aria-haspopup="menu"
                   title={lost ? `${name} (connection lost)` : name}
                   onClick={() => setActiveProfile(id)}
@@ -121,14 +141,36 @@ export function Sidebar() {
         )}
 
         <div className="sidebar-browser">
+          <div className="sidebar-sections" role="tablist" aria-label="Sidebar">
+            {(['items', 'queries', 'history'] as const).map((item) => (
+              <button type="button" key={item} role="tab" id={`sidebar-tab-${item}`} aria-selected={section === item} aria-controls={`sidebar-panel-${item}`} tabIndex={section === item ? 0 : -1}
+                onClick={() => setSection(item)} onKeyDown={(event) => {
+                  const items = ['items', 'queries', 'history'] as const;
+                  const index = items.indexOf(item);
+                  const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : -1;
+                  if (next < 0) return;
+                  event.preventDefault();
+                  setSection(items[next]);
+                  document.getElementById(`sidebar-tab-${items[next]}`)?.focus();
+                }}>{item === 'items' ? 'Items' : item === 'queries' ? 'Queries' : 'History'}</button>
+            ))}
+          </div>
+          <div className="sidebar-section-content" role="tabpanel" id={`sidebar-panel-${section}`} aria-labelledby={`sidebar-tab-${section}`}>
+
           {summary && conn && activeProfileId && (
             <>
               <div className="row" style={{ padding: '2px 12px 6px' }} onContextMenu={(event) => openConnectionMenu(event, activeProfileId)}>
-                <DriverIcon driver={summary.profile.driver} size={20} />
-                <div className="grow" style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={connectionName(activeProfileId)}>{connectionName(activeProfileId)}</div>
-                  <EnvBadge env={summary.profile.env} />
-                </div>
+                <button type="button" className="sidebar-connection-trigger grow" aria-haspopup="dialog"
+                  aria-expanded={connectionMenu?.details === true} onClick={(event) => openConnectionMenu(event, activeProfileId, true)}>
+                  {!showSwitcher && !summary.profile.env.name && connecting[activeProfileId]
+                    ? <span className="sidebar-reconnect-spinner" role="status" aria-label="Reconnecting"><Spinner /></span>
+                    : <DriverIcon driver={summary.profile.driver} size={20} />}
+                  <span className="sidebar-connection-title">
+                    <b title={connectionName(activeProfileId)}>{connectionName(activeProfileId)}</b>
+                    <EnvBadge env={summary.profile.env} busy={!!connecting[activeProfileId]} />
+                  </span>
+                  <span className="ctx-connection-chevron" aria-hidden="true" />
+                </button>
                 <button
                   type="button"
                   className="btn icon ghost"
@@ -148,6 +190,7 @@ export function Sidebar() {
                   </button>
                 </div>
               )}
+              <div style={{ display: section === 'items' ? 'contents' : 'none' }}>
               <div style={{ padding: '0 10px 6px' }}>
                 <input className="input" style={{ width: '100%' }} placeholder="Filter loaded objects" value={filter} onChange={(e) => setFilter(e.target.value)} />
               </div>
@@ -155,8 +198,16 @@ export function Sidebar() {
                 <TreeChildren key={activeProfileId} profileId={activeProfileId} parent={null} depth={0} filter={filter.toLowerCase()}
                   onSeparate={conn.status === 'connected' ? (name) => setSplit({ sessionId: activeProfileId, name }) : undefined} />
               </TableTreeSelection>
+              </div>
             </>
           )}
+          <div id="sidebar-query-library" className="sidebar-library" hidden={section === 'items'}>
+            {conn && activeProfileId && section !== 'items' && !activeSql && (
+              <QueryLibrary key={activeProfileId} profileId={activeProfileId} mode={section === 'history' ? 'history' : 'saved'} version={0}
+                saving={null} onSavingChange={() => {}} getText={() => ''} ctx={conn.defaultContext}
+                onOpen={(sql, context) => newSqlTab(activeProfileId, sql, context)} onSaved={() => {}} />
+            )}
+          </div>
           {!conn && (
             <div className="state">
               <p>No open connection.</p>
@@ -165,9 +216,46 @@ export function Sidebar() {
               </button>
             </div>
           )}
+          </div>
         </div>
       </div>
-      {connectionMenu && menuConnection && (
+      {connectionMenu?.details && menuConnection && menuProfile && (
+        <div className="sidebar-connection-details" ref={connectionMenuRef} role="dialog" aria-label="Connection details"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              setConnectionMenu(null);
+              connectionMenu.trigger.focus();
+            }
+          }}>
+          <div className="row sidebar-connection-details-title">
+            <DriverIcon driver={menuProfile.driver} size={20} />
+            <b>{connectionName(connectionMenu.sessionId)}</b>
+            <EnvBadge env={menuProfile.env} />
+          </div>
+          <dl>
+            <dt>Host</dt><dd>{menuProfile.host}{'port' in menuProfile ? `:${menuProfile.port}` : ''}</dd>
+            <dt>Driver</dt><dd>{DRIVER_LABELS[menuProfile.driver]}</dd>
+            <dt>{menuProfile.driver === 'databricks' ? 'Catalog' : 'Database'}</dt>
+            <dd>{menuConnection.defaultContext.database ?? menuConnection.defaultContext.catalog ?? '—'}</dd>
+            {'user' in menuProfile && <><dt>User</dt><dd>{menuProfile.user}</dd></>}
+            {'tls' in menuProfile && <><dt>TLS mode</dt><dd>{menuProfile.tls.mode}</dd></>}
+          </dl>
+          <label className="row">Theme<select className="select grow" value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
+            {(['system', 'light', 'dark', 'white', 'slate', 'sepia'] as const).map((value) => <option key={value} value={value}>{value === 'system' ? 'Auto' : value[0].toUpperCase() + value.slice(1)}</option>)}
+          </select></label>
+          <div className="row sidebar-connection-details-actions">
+            <button type="button" className="btn" onClick={() => { setConnectionMenu(null); void disconnect(connectionMenu.sessionId); }}>Disconnect</button>
+            <span className="spacer" />
+            <button type="button" className="btn" disabled={!!connecting[connectionMenu.sessionId]} onClick={() => void reconnectConnection(connectionMenu.sessionId)}>Reconnect</button>
+            <button type="button" className="btn" onClick={() => {
+              useApp.setState({ editProfileId: menuProfile.id });
+              setScreen('connections');
+            }}>Edit</button>
+          </div>
+        </div>
+      )}
+      {connectionMenu && !connectionMenu.details && menuConnection && (
         <div className="conn-context-menu sidebar-connection-menu" ref={connectionMenuRef} role="menu" aria-label="Open connection actions" onKeyDown={(event) => {
           if (event.key === 'Escape' || event.key === 'Tab') {
             if (event.key === 'Escape') event.preventDefault();
@@ -181,14 +269,16 @@ export function Sidebar() {
             buttons[(index + step + buttons.length) % buttons.length]?.focus();
           }
         }}>
-          <button type="button" role="menuitem" aria-keyshortcuts="Meta+T" onClick={() => {
+          <button type="button" role="menuitem" aria-keyshortcuts={sc.aria('new-sql-tab')} onClick={() => {
             setConnectionMenu(null);
             newSqlTab(connectionMenu.sessionId);
-          }}><span>New SQL Query</span><kbd>⌘T</kbd></button>
+          }}><span>New SQL Query</span><Kbd id="new-sql-tab" /></button>
           <button type="button" role="menuitem" disabled={menuConnection.status !== 'connected'} onClick={() => {
             setSplit({ sessionId: connectionMenu.sessionId });
             setConnectionMenu(null);
           }}>Open Separate Connection…</button>
+          <button type="button" role="menuitem" disabled={!!connecting[connectionMenu.sessionId]}
+            onClick={() => void reconnectConnection(connectionMenu.sessionId)}>Reconnect</button>
           <button type="button" role="menuitem" onClick={() => {
             setConnectionMenu(null);
             void disconnect(connectionMenu.sessionId);
@@ -250,31 +340,62 @@ function SplitConnectionDialog({ sessionId, initialName, onClose }: { sessionId:
   );
 }
 
+// Each reconnect replaces the session object, so metadata from the old session is discarded.
+const treeCache = new WeakMap<object, Map<string, {
+  revision: number;
+  request: Promise<TreeNode[]>;
+  nodes?: TreeNode[];
+}>>();
+
 function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profileId: string; parent: TreeNode | null; depth: number; filter: string; onSeparate?: (name: string) => void }) {
   const key = containerKey(profileId, parent ? nodePathAsContainer(parent) : {});
   const refresh = useApp((s) => s.treeRefresh[key] ?? 0);
-  const scope = useApp((s) => parent ? undefined : s.connections[profileId]?.scope);
+  const connection = useApp((s) => s.connections[profileId]);
+  const scope = parent ? undefined : connection?.scope;
   const pinProfileId = useApp((s) => s.connections[profileId]?.profileId ?? profileId);
   const pinnedTables = useApp((s) => s.pinnedTables);
-  const [nodes, setNodes] = useState<TreeNode[] | null>(null);
+  const defaultDatabase = useApp((s) => s.connections[profileId]?.defaultContext.database);
+  const [showOtherDatabases, setShowOtherDatabases] = useState(false);
+  const cached = connection && treeCache.get(connection)?.get(key);
+  const [nodes, setNodes] = useState<TreeNode[] | null>(() => cached?.revision === refresh ? cached.nodes ?? null : null);
   const [error, setError] = useState<ErrorInfo | null>(null);
-
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      const nodes = await api.meta.children(profileId, parent);
-      setNodes(scope ? nodes.filter((node) => node.kind === scope.kind && node.name === scope.name) : nodes);
-    } catch (e) {
-      const info = errorInfo(e);
-      noteError(profileId, info);
-      setError(info);
-      setNodes([]);
-    }
-  }, [profileId, parent, scope]);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    void load();
-  }, [load, refresh]);
+    if (!connection) return;
+    let entries = treeCache.get(connection);
+    if (!entries) {
+      entries = new Map();
+      treeCache.set(connection, entries);
+    }
+    let entry = entries.get(key);
+    if (!entry || entry.revision !== refresh) {
+      const request = api.meta.children(profileId, parent).then((children) =>
+        scope ? children.filter((node) => node.kind === scope.kind && node.name === scope.name) : children,
+      );
+      const pending = { revision: refresh, request, nodes: undefined as TreeNode[] | undefined };
+      const cache = entries;
+      cache.set(key, pending);
+      void request.then((children) => { pending.nodes = children; }, () => {
+        if (cache.get(key) === pending) cache.delete(key);
+      });
+      entry = pending;
+    }
+    let current = true;
+    setError(null);
+    if (entry.nodes) setNodes(entry.nodes);
+    else void entry.request.then(
+      (children) => { if (current) setNodes(children); },
+      (failure) => {
+        if (!current) return;
+        const info = errorInfo(failure);
+        noteError(profileId, info);
+        setError(info);
+        setNodes([]);
+      },
+    );
+    return () => { current = false; };
+  }, [connection, key, refresh, profileId, parent, scope, retry]);
 
   const pad = 6 + depth * 14;
   if (nodes === null)
@@ -288,7 +409,7 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
       <div className="tree-msg err" style={{ paddingLeft: pad + 18 }} title={error.message}>
         {categoryTitle(error.category)}: {error.message.split('\n')[0]}
         <div>
-          <button className="btn small" style={{ marginTop: 4 }} onClick={() => void load()}>
+          <button className="btn small" style={{ marginTop: 4 }} onClick={() => setRetry((value) => value + 1)}>
             Retry
           </button>
         </div>
@@ -304,7 +425,13 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
       </div>
     );
   }
-  const shown = filter ? nodes.filter((n) => n.hasChildren || n.name.toLowerCase().includes(filter)) : nodes;
+  const hasOtherDatabases = !parent && !!defaultDatabase
+    && nodes.some((node) => node.kind === 'database' && node.name === defaultDatabase)
+    && nodes.some((node) => node.kind === 'database' && node.name !== defaultDatabase);
+  const visible = hasOtherDatabases && !showOtherDatabases
+    ? nodes.filter((node) => node.kind !== 'database' || node.name === defaultDatabase)
+    : nodes;
+  const shown = filter ? visible.filter((node) => node.hasChildren || node.name.toLowerCase().includes(filter)) : visible;
   const ordered = pinnedTables.length
     ? [...shown].sort((a, b) => Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, a))) - Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, b))))
     : shown;
@@ -313,17 +440,26 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
       {ordered.map((n) => (
         <TreeItem key={n.kind + n.name} profileId={profileId} node={n} depth={depth} filter={filter} onSeparate={onSeparate} />
       ))}
+      {hasOtherDatabases && (
+        <button type="button" className="btn small ghost" style={{ margin: '6px 10px' }}
+          aria-expanded={showOtherDatabases} onClick={() => setShowOtherDatabases((show) => !show)}>
+          {showOtherDatabases ? 'Hide other databases' : 'Show other databases'}
+        </button>
+      )}
     </>
   );
 }
 
 function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: string; node: TreeNode; depth: number; filter: string; onSeparate?: (name: string) => void }) {
+  const sc = useShortcuts();
   const selection = useTableTreeSelection();
   const selectedNodes = selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node)) ? selection.selected : [node];
   const multiple = selectedNodes.length > 1;
   const allTables = selectedNodes.every((item) => item.kind === 'table');
   const [importFormat, setImportFormat] = useState<TableImportFormat | null>(null);
-  const [open, setOpen] = useState(node.detail === 'default' && depth === 0);
+  const [open, setOpen] = useState(() => depth === 0 && (node.kind === 'database'
+    ? useApp.getState().connections[profileId]?.defaultContext.database === node.name
+    : node.detail === 'default'));
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -336,7 +472,7 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
   }, [menu]);
   const { openTab, newSqlTab, refreshTree, setTablePinned, activeTabId, tabs } = useApp();
   const conn = useApp((s) => s.connections[profileId]);
-  const unsaved = useApp((s) => objectHasUnsavedChanges(s.tabs, s.gridDrafts, profileId, node.path, node.kind));
+  const unsaved = useApp((s) => objectHasUnsavedChanges(s.tabs, s.gridDrafts, profileId, node.path, node.kind, s.unsavedStructureTabs));
   const pinnedTables = useApp((s) => s.pinnedTables);
   const pinProfileId = conn?.profileId ?? profileId;
   const isSelected = !node.hasChildren && selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node));
@@ -346,14 +482,42 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
   const container = nodePathAsContainer(node);
   const canCreateHere = conn?.capabilities.createTable && (node.kind === 'schema' || (node.kind === 'database' && conn.capabilities.hierarchy[1] === 'table'));
 
+  const isDefaultDatabase = node.kind === 'database' && conn?.defaultContext.database === node.name;
+  const detail = node.kind === 'database' && conn
+    ? isDefaultDatabase ? 'default' : node.detail === 'default' ? undefined : node.detail
+    : node.detail;
+
+  async function setDefaultDatabase() {
+    if (!conn || conn.scope || conn.status !== 'connected') return;
+    try {
+      const saved = await api.profiles.setDefaultDatabase(conn.profileId, node.name);
+      useApp.setState((state) => ({
+        profiles: state.profiles.map((entry) => entry.profile.id === saved.profile.id ? saved : entry),
+        connections: Object.fromEntries(Object.entries(state.connections).map(([id, connection]) => [
+          id,
+          connection.profileId === saved.profile.id && !connection.scope
+            ? { ...connection, defaultContext: { database: node.name } }
+            : connection,
+        ])),
+      }));
+      useApp.getState().toast('ok', `Default database set to ${node.name}.`);
+    } catch (error) {
+      useApp.getState().toast('error', errorInfo(error).message);
+    }
+  }
+
   function beginAction(action: TableAction) {
     setMenu(null);
     if (allTables && (action !== 'clone' || !multiple)) selection.action(action, selectedNodes);
   }
   function tableShortcut(event: KeyboardEvent<HTMLElement>) {
-    if (node.kind !== 'table' || event.key !== 'Backspace' || event.repeat) return;
-    if (event.metaKey && !event.altKey && !event.ctrlKey && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); beginAction('delete'); }
-    else if (event.altKey && !event.metaKey && !event.ctrlKey && !event.shiftKey) { event.preventDefault(); event.stopPropagation(); beginAction('truncate'); }
+    if (node.kind !== 'table' || event.repeat) return;
+    const action = matchesAccelerator(event, effectiveAccelerator('table-delete', sc.overrides)) ? 'delete'
+      : matchesAccelerator(event, effectiveAccelerator('table-truncate', sc.overrides)) ? 'truncate' : null;
+    if (!action) return;
+    event.preventDefault();
+    event.stopPropagation();
+    beginAction(action);
   }
 
   const openObject = (view: 'data' | 'structure' = 'data', nodes: TreeNode[] = [node]) => {
@@ -404,10 +568,10 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
         title={node.hasChildren ? node.name : `${node.name} (${node.kind})${unsaved ? " — Unsaved changes" : ""}`}
       >
         <span className={`chev${open ? ' open' : ''}`}>{node.hasChildren ? '▶' : ''}</span>
-        <span className="ico">{ICON[node.kind]}</span>
+        <span className="ico"><ObjectIcon kind={node.kind} /></span>
         <span className="name">{node.name}</span>
         {isPinned && <span className="pin-ico" role="img" aria-label="Pinned" title="Pinned to top">📌</span>}
-        {node.detail && <span className="detail">{node.detail}</span>}
+        {detail && <span className="detail">{detail}</span>}
         {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
       </div>
       {menu && (
@@ -442,6 +606,11 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
               onClick={() => (setMenu(null), setTablePinned(pinProfileId, selectedNodes, !allSelectedPinned))}
             />
           )}
+          {node.kind === 'database' && conn?.status === 'connected' && !conn.scope && (
+            <button type="button" role="menuitem" disabled={isDefaultDatabase} onClick={() => { setMenu(null); void setDefaultDatabase(); }}>
+              Set as default
+            </button>
+          )}
           {onSeparate && (node.kind === 'database' || node.kind === 'catalog') && (
             <MenuItem label="Open in Separate Connection…" onClick={() => { setMenu(null); onSeparate(node.name); }} />
           )}
@@ -466,8 +635,8 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
               void navigator.clipboard.writeText(selectedNodes.map((item) => item.name).join('\n')).catch((error) => useApp.getState().toast('error', errorInfo(error).message));
             }} />
             <button role="menuitem" disabled={multiple} onClick={() => beginAction('clone')}>Clone…</button>
-            <button role="menuitem" disabled={!allTables} className="destructive table-action-menuitem" aria-keyshortcuts="Alt+Backspace" onClick={() => beginAction('truncate')}><span>{multiple ? `Truncate ${selectedNodes.length} Tables…` : 'Truncate…'}</span><kbd>⌥⌫</kbd></button>
-            <button role="menuitem" disabled={!allTables} className="destructive table-action-menuitem" aria-keyshortcuts="Meta+Backspace" onClick={() => beginAction('delete')}><span>{multiple ? `Delete ${selectedNodes.length} Tables…` : 'Delete…'}</span><kbd>⌘⌫</kbd></button>
+            <button role="menuitem" disabled={!allTables} className="destructive table-action-menuitem" aria-keyshortcuts={sc.aria('table-truncate')} onClick={() => beginAction('truncate')}><span>{multiple ? `Truncate ${selectedNodes.length} Tables…` : 'Truncate…'}</span><Kbd id="table-truncate" /></button>
+            <button role="menuitem" disabled={!allTables} className="destructive table-action-menuitem" aria-keyshortcuts={sc.aria('table-delete')} onClick={() => beginAction('delete')}><span>{multiple ? `Delete ${selectedNodes.length} Tables…` : 'Delete…'}</span><Kbd id="table-delete" /></button>
           </>}
           {node.hasChildren && <MenuItem label="Refresh" onClick={() => (setMenu(null), refreshTree(profileId, container), setOpen(true))} />}
         </div>

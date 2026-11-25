@@ -1,10 +1,13 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent } from 'react';
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type KeyboardEvent, type DragEvent } from 'react';
 import { describePath } from '@earthql/core';
-import { connectionName, profileOf, useApp, type Tab } from '../store';
+import { connectionName, profileOf, useApp, type PaneId, type Tab } from '../store';
 import { TAB_GROUP_COLORS, type TabGroup } from '../tab-groups';
 import { hasUnsavedChanges } from '../unsaved-changes';
 import { ContextSubmenu } from './ContextSubmenu';
 import { Modal } from './common';
+import { Kbd, useShortcuts } from './Shortcut';
+import { ObjectIcon } from './ObjectIcon';
+import { tabInsertionTarget } from '../tab-drop';
 
 function tabTitle(tab: Tab) {
   if (tab.customTitle) return tab.customTitle;
@@ -27,21 +30,29 @@ interface GroupEditor {
 }
 
 interface DropTarget {
-  id: string;
+  id: string | null;
   after: boolean;
 }
 
-export function TabBar() {
+export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
+  const sc = useShortcuts();
   const {
-    tabs, activeTabId, activeProfileId, activateTab, closeTab, closeTabs, newSqlTab, refreshTab, renameTab,
+    tabs: allTabs, activeTabId: globalActiveTabId, activeProfileId, activateTab, closeTab, closeTabs, newSqlTab: createSqlTab, refreshTab, renameTab,
+    splitPane, focusPane, moveTabToPane, draggedTabId, draggedTabWidth, setDraggedTabId,
     tabGroups, moveTab, moveTabsToGroup, createTabGroup, renameTabGroup, setTabGroupColor, toggleTabGroupCollapsed, removeTabGroup,
     openSplit,
   } = useApp();
+  const tabs = allTabs.filter((tab) => pane === 'split' ? splitPane?.tabIds.includes(tab.id) : !splitPane?.tabIds.includes(tab.id));
+  const activeTabId = pane === 'split' ? splitPane?.tabId : splitPane ? splitPane.mainTabId : globalActiveTabId;
+  function newSqlTab(profileId: string) { focusPane(pane); createSqlTab(profileId); }
+  const unsavedStructureTabs = useApp((s) => s.unsavedStructureTabs);
   const gridDrafts = useApp((s) => s.gridDrafts);
   const [menu, setMenu] = useState<TabMenu | null>(null);
   const [rename, setRename] = useState<{ id: string; title: string } | null>(null);
   const [closeTip, setCloseTip] = useState<TabMenu | null>(null);
-  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const previousTabPositions = useRef(new Map<string, number>());
+  const dragSlots = useRef<{ id: string; scroll: number; slots: { id: string; center: number }[] } | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dragGroupId, setDragGroupId] = useState<string | null>(null);
   const [groupEditor, setGroupEditor] = useState<GroupEditor | null>(null);
@@ -59,6 +70,76 @@ export function TabBar() {
     const last = segments.at(-1);
     if (last && last.group?.id === group?.id) last.tabs.push(tab);
     else segments.push({ group, tabs: [tab] });
+  }
+
+  useEffect(() => {
+    if (draggedTabId) return;
+    dragSlots.current = null;
+    setDropTarget(null);
+    setDragGroupId(null);
+
+  }, [draggedTabId]);
+
+  useLayoutEffect(() => {
+    const elements = barRef.current?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [];
+    const positions = new Map<string, number>();
+    for (const element of elements) {
+      const id = element.dataset.tabId!;
+      if (id === draggedTabId) continue;
+      element.getAnimations().forEach((animation) => animation.cancel());
+      const left = element.getBoundingClientRect().left;
+      const previous = previousTabPositions.current.get(id);
+      positions.set(id, left);
+      if (draggedTabId && previous !== undefined && Math.abs(previous - left) > 1 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        element.animate([{ transform: `translateX(${previous - left}px)` }, { transform: 'translateX(0)' }], { duration: 140, easing: 'ease-out' });
+      }
+    }
+    previousTabPositions.current = positions;
+  });
+
+  function measureSlots(id: string) {
+    const strip = barRef.current?.querySelector<HTMLElement>('.tabs');
+    dragSlots.current = { id, scroll: strip?.scrollLeft ?? 0,
+      slots: [...(strip?.querySelectorAll<HTMLElement>('[data-tab-id]') ?? [])]
+        .filter((element) => element.dataset.tabId !== id)
+        .map((element) => { const rect = element.getBoundingClientRect(); return { id: element.dataset.tabId!, center: rect.left + rect.width / 2 }; }),
+    };
+  }
+
+  function updateDrop(event: DragEvent<HTMLDivElement>) {
+    if (!draggedTabId || !event.dataTransfer.types.includes('application/x-earthql-tab')) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    if (dragSlots.current?.id !== draggedTabId) measureSlots(draggedTabId);
+    const strip = barRef.current?.querySelector<HTMLElement>('.tabs');
+    const bounds = strip?.getBoundingClientRect();
+    if (strip && bounds) {
+      if (event.clientX < bounds.left + 28) strip.scrollLeft -= 16;
+      else if (event.clientX > bounds.right - 28) strip.scrollLeft += 16;
+    }
+    const snapshot = dragSlots.current!;
+    const scrollDelta = (strip?.scrollLeft ?? 0) - snapshot.scroll;
+    const next = tabInsertionTarget(snapshot.slots, event.clientX + scrollDelta);
+    setDropTarget((previous) => previous?.id === next.id && previous.after === next.after ? previous : next);
+    setDragGroupId(null);
+  }
+
+  function finishDrop(event: DragEvent<HTMLDivElement>) {
+    const id = event.dataTransfer.getData('application/x-earthql-tab');
+    if (!id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    moveTabToPane(id, pane);
+    const target = dropTarget ?? { id: tabs.filter((tab) => tab.id !== id).at(-1)?.id ?? null, after: true };
+    moveTabsToGroup([id], target.id ? groupOf.get(target.id)?.id ?? null : null);
+    if (target.id) moveTab(id, target.id, target.after);
+    setDraggedTabId(null);
+    setDropTarget(null);
+    dragSlots.current = null;
+  }
+
+  function dropSlot() {
+    return <div className="tab-drop-slot" aria-hidden="true" style={{ width: draggedTabWidth }} />;
   }
 
   useLayoutEffect(() => {
@@ -148,15 +229,16 @@ export function TabBar() {
   function renderTab(tab: Tab) {
     const profile = profileOf(tab.profileId)?.profile;
     const title = tabTitle(tab);
-    const unsaved = hasUnsavedChanges(gridDrafts[tab.id]);
+    const unsaved = hasUnsavedChanges(gridDrafts[tab.id]) || !!unsavedStructureTabs[tab.id];
     const detail = tab.kind === 'table' ? describePath(tab.object) : title;
     const subtitle = tab.kind === 'table' ? describePath({ ...tab.object, name: '' }).replace(/\.$/, '') : '';
     return (
+      <Fragment key={tab.id}>
+      {dropTarget?.id === tab.id && !dropTarget.after && dropSlot()}
       <div
-        key={tab.id}
         data-tab-id={tab.id}
-        className={`tab${tab.id === activeTabId ? ' active' : ''}${draggingId === tab.id ? ' dragging' : ''}${dropTarget?.id === tab.id ? (dropTarget.after ? ' drop-after' : ' drop-before') : ''}`}
-        style={{ '--env': profile?.env.color ?? 'transparent' } as CSSProperties}
+        className={`tab${tab.id === activeTabId ? ' active' : ''}${draggedTabId === tab.id ? ' dragging-source' : ''}`}
+        style={{ '--env': profile?.env.color ?? 'transparent', ...(draggedTabId === tab.id ? { width: draggedTabWidth } : {}) } as CSSProperties}
         draggable
         onMouseDown={(event) => {
           if (event.button === 1) closeTab(tab.id);
@@ -165,43 +247,40 @@ export function TabBar() {
         onDragStart={(event) => {
           event.dataTransfer.effectAllowed = 'move';
           event.dataTransfer.setData('text/plain', tab.id);
-          setMenu(null);
-          setDraggingId(tab.id);
-        }}
-        onDragOver={(event) => {
-          if (!draggingId) return;
-          event.preventDefault();
-          event.dataTransfer.dropEffect = 'move';
+          event.dataTransfer.setData('application/x-earthql-tab', tab.id);
           const rect = event.currentTarget.getBoundingClientRect();
-          setDropTarget(draggingId === tab.id ? null : { id: tab.id, after: event.clientX > rect.left + rect.width / 2 });
-        }}
-        onDragLeave={(event) => {
-          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropTarget(null);
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          if (draggingId && draggingId !== tab.id) {
-            const rect = event.currentTarget.getBoundingClientRect();
-            moveTabsToGroup([draggingId], groupOf.get(tab.id)?.id ?? null);
-            moveTab(draggingId, tab.id, event.clientX > rect.left + rect.width / 2);
-          }
-          setDraggingId(null);
-          setDropTarget(null);
+          const image = event.currentTarget.cloneNode(true) as HTMLElement;
+          image.className = 'tab active';
+          Object.assign(image.style, { position: 'fixed', left: '-10000px', top: '0', width: `${rect.width}px`, maxWidth: 'none', margin: '0' });
+          document.body.appendChild(image);
+          event.dataTransfer.setDragImage(image, event.clientX - rect.left, event.clientY - rect.top);
+          requestAnimationFrame(() => image.remove());
+          measureSlots(tab.id);
+          const remaining = tabs.filter((item) => item.id !== tab.id);
+          const index = tabs.findIndex((item) => item.id === tab.id);
+          const following = tabs.slice(index + 1).find((item) => item.id !== tab.id);
+          setDropTarget(following ? { id: following.id, after: false } : { id: remaining.at(-1)?.id ?? null, after: true });
+          setMenu(null);
+          setDraggedTabId(tab.id, rect.width);
+          setCloseTip(null);
         }}
         onDragEnd={() => {
-          setDraggingId(null);
+          setDraggedTabId(null);
+
           setDropTarget(null);
           setDragGroupId(null);
         }}
         title={`${connectionName(tab.profileId)}${profile?.env.name ? ` (${profile.env.name})` : ''} — ${detail}`}
       >
         <span className="stripe" />
-        <span className="muted">{tab.kind === 'sql' ? '⌨︎' : tab.kind === 'create' ? '＋' : tab.objectKind === 'view' ? '◇' : '▦'}</span>
+        <ObjectIcon kind={tab.kind === 'sql' ? 'sql' : tab.kind === 'create' ? 'create' : tab.objectKind === 'view' ? 'view' : 'table'} />
         <span className="t-title">
-          {title}
+          <span className="t-name-line">
+            <span className="t-name">{title}</span>
+            {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
+          </span>
           <div className="t-sub">{tab.kind === 'table' ? profile?.name : connectionName(tab.profileId)}{subtitle ? ` · ${subtitle}` : ''}</div>
         </span>
-        {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
         <button
           type="button"
           className="t-close"
@@ -217,20 +296,33 @@ export function TabBar() {
           ×
         </button>
       </div>
+      {dropTarget?.id === tab.id && dropTarget.after && dropSlot()}
+      </Fragment>
     );
   }
 
   return (
     <>
-      <div className="main-top drag">
+      <div className="main-top drag" ref={barRef} onDragOver={updateDrop} onDrop={finishDrop}
+        onDragLeave={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) {
+            setDropTarget(null);
+            setDragGroupId(null);
+            dragSlots.current = null;
+          }
+        }}>
         {activeProfileId && (
           <button
             type="button"
             className="btn text no-drag new-sql-tab"
             aria-label="New SQL Query"
-            aria-keyshortcuts="Meta+T"
-            data-tooltip="+ New SQL Query (⌘T)"
-            onClick={() => newSqlTab(activeProfileId)}
+            aria-keyshortcuts={sc.aria('new-sql-tab')}
+            data-tooltip={sc.hint('+ New SQL Query', 'new-sql-tab')}
+            onClick={() => {
+              const selectedConnection = useApp.getState().activeProfileId;
+              if (selectedConnection) newSqlTab(selectedConnection);
+            }}
           >
             ＋ SQL
           </button>
@@ -260,37 +352,45 @@ export function TabBar() {
                     openMenu(event.clientX, event.clientY, undefined, group.id);
                   }}
                   onDragOver={(event) => {
-                    if (!draggingId) return;
+                    if (!event.dataTransfer.types.includes('application/x-earthql-tab')) return;
                     event.preventDefault();
+                    event.stopPropagation();
+
                     event.dataTransfer.dropEffect = 'move';
                     setDragGroupId(group.id);
                     setDropTarget(null);
                   }}
-                  onDragLeave={() => setDragGroupId(null)}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragGroupId(null); }}
                   onDrop={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    if (draggingId) {
-                      moveTabsToGroup([draggingId], group.id);
+                    const sourceId = event.dataTransfer.getData('application/x-earthql-tab');
+                    if (sourceId) {
+                      moveTabToPane(sourceId, pane);
+                      moveTabsToGroup([sourceId], group.id);
                       if (group.collapsed) toggleTabGroupCollapsed(group.id);
                     }
-                    setDraggingId(null);
+                    setDraggedTabId(null);
+
                     setDropTarget(null);
                     setDragGroupId(null);
                   }}
                 >
                   <span aria-hidden="true">{group.collapsed ? '▸' : '▾'}</span>
                   <span className="grow">{group.name}</span>
-                  <span className="muted">{group.tabIds.length}</span>
+                  <span className="muted">{group.tabIds.filter((id) => tabs.some((tab) => tab.id === id)).length}</span>
                 </button>
                 {!group.collapsed && segmentTabs.map(renderTab)}
+                {dragGroupId === group.id && dropSlot()}
               </div>
             );
           })}
+          {draggedTabId && dropTarget?.id === null && !dragGroupId && dropSlot()}
         </div>
+
       </div>
       {closeTip && !menu && tabs.some((tab) => tab.id === closeTip.tabId) && (
-        <div className="tab-close-tooltip" aria-hidden="true" style={{ left: closeTip.x, top: closeTip.y }}>Close (⌘W)</div>
+        <div className="tab-close-tooltip" aria-hidden="true" style={{ left: closeTip.x, top: closeTip.y }}>{sc.hint('Close', 'close-tab')}</div>
       )}
       {menu && (
         <div className="tab-context-menu" ref={menuRef} role="menu" aria-label="Tab actions" onKeyDown={onMenuKey}>
@@ -304,12 +404,12 @@ export function TabBar() {
             </>
           )}
           <button type="button" role="menuitem" disabled={!profileId} onClick={() => invoke(() => { if (profileId) newSqlTab(profileId); })}>
-            <span>＋ New SQL Query</span><kbd>⌘T</kbd>
+            <span>＋ New SQL Query</span><Kbd id="new-sql-tab" />
           </button>
           {target && (
             <>
               <div className="conn-menu-separator" role="separator" />
-              <button type="button" role="menuitem" onClick={() => invoke(() => refreshTab(target.id))}><span>Refresh</span><kbd>⌘R</kbd></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => refreshTab(target.id))}><span>Refresh</span><Kbd id="refresh" /></button>
               <button type="button" role="menuitem" onClick={() => invoke(() => setRename({ id: target.id, title: tabTitle(target) }))}>Rename Tab</button>
               <ContextSubmenu label="Add to Group">
                 <button type="button" role="menuitem" onClick={() => invoke(() => moveTabsToGroup([target.id], null))}>Ungrouped</button>
@@ -320,14 +420,16 @@ export function TabBar() {
                 <button type="button" role="menuitem" onClick={() => invoke(() => openGroupEditor({ name: '', color: TAB_GROUP_COLORS[0], ids: [target.id] }))}>New Group…</button>
               </ContextSubmenu>
               <div className="conn-menu-separator" role="separator" />
-              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'left'))}><span>Split Left</span><kbd>⌘[</kbd></button>
-              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'right'))}><span>Split Right</span><kbd>⌘]</kbd></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'left'))}><span>Split Left</span><Kbd id="split-left" /></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'right'))}><span>Split Right</span><Kbd id="split-right" /></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'up'))}><span>Split Up</span><Kbd id="split-up" /></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'down'))}><span>Split Down</span><Kbd id="split-down" /></button>
               <div className="conn-menu-separator" role="separator" />
-              <button type="button" role="menuitem" onClick={() => invoke(() => closeTab(target.id))}><span>Close Tab</span><kbd>⌘W</kbd></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => closeTab(target.id))}><span>Close Tab</span><Kbd id="close-tab" /></button>
               <button type="button" role="menuitem" disabled={tabs.length < 2} onClick={() => invoke(() => closeTabs(tabs.filter((tab) => tab.id !== target.id).map((tab) => tab.id), target.id))}>
                 Close Other Tabs
               </button>
-              <button type="button" role="menuitem" onClick={() => invoke(() => closeTabs(tabs.map((tab) => tab.id)))}><span>Close All</span><kbd>⌘⇧W</kbd></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => closeTabs(tabs.map((tab) => tab.id)))}><span>Close All</span><Kbd id="close-all-tabs" /></button>
             </>
           )}
         </div>

@@ -48,9 +48,9 @@ export function TableImportDialog({ profileId, object, format, onClose }: { prof
       if (response.rows || format === 'sql') {
         const state = useApp.getState();
         state.refreshTree(profileId, ctxForObject(object));
-        for (const tab of state.tabs) if (tab.profileId === profileId && tab.kind === 'table' && (format === 'sql' || describePath(tab.object) === describePath(object))) state.refreshTab(tab.id);
+        for (const tab of state.tabs) if (tab.profileId === profileId && tab.kind === 'table' && (format === 'sql' || describePath(tab.object) === describePath(object))) state.refreshTab(tab.id, true);
       }
-      if (response.status === 'ok') { toast('ok', format === 'sql' ? `Imported ${response.statements} SQL statements (${response.rows} affected rows).` : `Imported ${response.rows.toLocaleString()} rows into ${describePath(object)}.`); onClose(); }
+      if (response.status === 'ok') { toast('ok', format === 'sql' ? `Imported ${response.statements} SQL statements (${response.rows} affected rows).` : `Imported ${response.rows.toLocaleString()} rows into ${describePath(object)}.`, 'Import'); onClose(); }
     } catch (error) { setError(errorInfo(error)); }
     finally { setBusy(false); }
   }

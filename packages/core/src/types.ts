@@ -264,12 +264,26 @@ export interface ExecContext {
 // Browse (table/view data)
 // ---------------------------------------------------------------------------
 
-export type FilterOp = '=' | '!=' | '<' | '<=' | '>' | '>=' | 'contains' | 'starts_with' | 'is_null' | 'is_not_null';
+export type FilterOp =
+  | '=' | '!=' | '<' | '<=' | '>' | '>='
+  | 'contains' | 'not_contains' | 'starts_with' | 'ends_with'
+  | 'contains_cs' | 'not_contains_cs' | 'starts_with_cs' | 'ends_with_cs'
+  | 'in' | 'not_in'
+  | 'between' | 'not_between'
+  | 'like'
+  | 'is_null' | 'is_not_null'
+  /** A hand-written condition in `value` (no column); see checkRawCondition. */
+  | 'raw';
 
 export interface Filter {
   column: string;
   op: FilterOp;
+  /** For 'in'/'not_in', a comma-separated list of values. */
   value?: string;
+  /** Upper bound for 'between' / 'not_between' (`value` is the lower bound). */
+  value2?: string;
+  /** How this filter combines with the one before it (default 'and'; ignored on the first). AND binds tighter than OR. */
+  join?: 'and' | 'or';
 }
 
 export interface Sort {
@@ -286,6 +300,7 @@ export interface BrowseRequest {
 }
 
 export interface BrowseResult {
+  totalRows?: string;
   columns: ResultColumn[];
   rows: Cell[][];
   offset: number;
@@ -333,6 +348,7 @@ export interface ConstraintInfo {
   columns: string[];
   definition?: string;
   references?: string;
+  foreignTarget?: { object: ObjectPath; columns: string[] };
 }
 
 export interface TableStructure {
@@ -380,9 +396,15 @@ export interface GridCellChange {
   value: string | null;
 }
 
+export type GridRowKey = { column: string; value: string }[];
+
 export interface GridRowUpdate {
-  key: { column: string; value: string }[];
+  key: GridRowKey;
   changes: GridCellChange[];
+}
+
+export interface GridRowDelete {
+  key: GridRowKey;
 }
 
 export type ColumnDefault = { kind: 'none' } | { kind: 'literal'; value: string } | { kind: 'expression'; value: string };

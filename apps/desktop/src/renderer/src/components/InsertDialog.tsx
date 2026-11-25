@@ -1,7 +1,9 @@
 import { useMemo, useState } from 'react';
 import {
+  cellToText,
   describePath,
   type BuiltStatement,
+  type Cell,
   type ColumnInfo,
   type ErrorInfo,
   type InsertCell,
@@ -29,16 +31,27 @@ function initialCell(c: ColumnInfo, defaultsSupported: boolean): CellState {
   return { mode: 'value', value: '' };
 }
 
+/** Seeds a cell from an existing row's value (Duplicate) — identity/PK columns still get a fresh
+ *  default instead of copying the original key, so the duplicate doesn't collide with it. */
+function cellFromValue(c: ColumnInfo, value: Cell, defaultsSupported: boolean): CellState {
+  if (c.isIdentity || c.isPrimaryKey) return initialCell(c, defaultsSupported);
+  if (value === null) return c.nullable ? { mode: 'null', value: '' } : { mode: 'value', value: '' };
+  return { mode: 'value', value: cellToText(value) };
+}
+
 export function InsertDialog({
   profileId,
   structure,
   privilegeUnknown,
+  initialRows,
   onClose,
   onInserted,
 }: {
   profileId: string;
   structure: TableStructure;
   privilegeUnknown: boolean;
+  /** Pre-fill rows from existing data (Duplicate); defaults to one blank row. */
+  initialRows?: Record<string, Cell>[];
   onClose: () => void;
   onInserted: () => void;
 }) {
@@ -48,7 +61,9 @@ export function InsertDialog({
   const defaultsSupported = !!caps?.columnDefaults;
   const columns = structure.columns;
   const blankRow = () => Object.fromEntries(columns.map((c) => [c.name, initialCell(c, defaultsSupported)])) as Record<string, CellState>;
-  const [rows, setRows] = useState<Record<string, CellState>[]>(() => [blankRow()]);
+  const rowFromValues = (values: Record<string, Cell>) =>
+    Object.fromEntries(columns.map((c) => [c.name, cellFromValue(c, values[c.name] ?? null, defaultsSupported)])) as Record<string, CellState>;
+  const [rows, setRows] = useState<Record<string, CellState>[]>(() => (initialRows?.length ? initialRows.map(rowFromValues) : [blankRow()]));
   const [step, setStep] = useState<'edit' | 'review' | 'running' | 'done'>('edit');
   const [preview, setPreview] = useState<BuiltStatement | null>(null);
   const [error, setError] = useState<ErrorInfo | null>(null);

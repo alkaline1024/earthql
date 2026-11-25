@@ -17,3 +17,14 @@ export function tableActionOptions(driver: DriverId) {
     cascade: driver === 'postgres',
   };
 }
+
+export type StructureEdit =
+  | { kind: 'rename'; column: string; name: string }
+  | { kind: 'add'; name: string; type: string }
+  | { kind: 'columnType'; column: string; type: string }
+  | { kind: 'drop'; column: string }
+  | { kind: 'addIndex' | 'addConstraint'; name: string; columns: string; unique?: boolean }
+  | { kind: 'dropIndex'; name: string }
+  | { kind: 'dropConstraint'; name: string }
+  | { kind: 'renameIndex'; name: string; next: string }
+  | { kind: 'renameConstraint'; name: string; next: string };

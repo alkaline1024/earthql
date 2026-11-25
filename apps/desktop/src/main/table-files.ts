@@ -11,7 +11,7 @@ import ExcelJS from 'exceljs';
 import { cellToText, ctxForObject, describePath, makeError, splitStatements, isBinaryCell, type Cell, type InsertSpec, type ObjectPath, type QueryCursor, type ResultColumn } from '@earthql/core';
 import type { ExportResult, TableExportItem, TableExportOptions, TableImportFormat, TableImportPreview, TableImportResult } from '../shared/api';
 import type { SessionManager } from './sessions';
-import { csvRecord, jsonRecord, parseImport, safeFileName, sqlValue, structureSql } from './table-file-formats';
+import { csvRecord, insertStatementLine, jsonRecord, parseImport, safeFileName, structureSql } from './table-file-formats';
 
 const MAX_IMPORT = 64 * 1024 * 1024;
 const jobs = new Map<string, { cancelled: boolean; cursor?: QueryCursor; runId?: string }>();
@@ -129,9 +129,7 @@ export async function exportTables(sessions: SessionManager, exportId: string, p
               if (options.format === 'csv') await write(targetOut, csvRecord(row, options, numeric));
               if (options.format === 'json') { await write(targetOut, `${firstRow ? '' : ',\n'}  ${jsonRecord(columns, row)}`); firstRow = false; }
               if (options.format === 'sql') {
-                const included = columns.map((column, index) => ({ column, index })).filter(({ index }) => !metadata[index]?.isGenerated || !!metadata[index]?.isIdentity);
-                if (!included.length) throw makeError('unsupported', 'No writable columns are available for SQL INSERT export.');
-                await write(targetOut, `INSERT INTO ${conn.dialect.qualify(item.object)} (${included.map(({ column }) => conn.dialect.quoteIdent(column.name)).join(', ')})${conn.driver === 'postgres' && metadata.some((column) => column?.isIdentity) ? ' OVERRIDING SYSTEM VALUE' : ''} VALUES (${included.map(({ index }) => sqlValue(row[index], metadata[index], conn.dialect)).join(', ')});\n`);
+                await write(targetOut, `${insertStatementLine(item.object, columns, row, metadata, conn.dialect)}\n`);
               }
               if (worksheet) {
                 if (tableRows + (options.headers ? 1 : 0) >= 1048576) throw makeError('unsupported', 'Excel supports at most 1,048,576 rows per sheet. Export CSV or JSON instead.');

@@ -13,6 +13,9 @@ export function UpdateButton() {
     void api.updates.status().then((next) => { if (active && !received) setStatus(next); }).catch(() => undefined);
     return () => { active = false; off(); };
   }, []);
+  useEffect(() => {
+    if (status.available) useApp.getState().addNotification('Update', 'An EarthQL update is available.');
+  }, [status.available]);
   if (!status.available) return null;
   return (
     <div className="update-notice">

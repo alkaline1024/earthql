@@ -17,6 +17,8 @@ import { useApp } from '../store';
 import { ContextSubmenu as ConnectionMenuBranch } from './ContextSubmenu';
 import { assignConnectionGroup, parseConnectionGroups, type ConnectionGroup } from '../connection-groups';
 import { DRIVER_META, DriverIcon, EnvBadge, ErrorView, Modal, Spinner, formatDuration } from './common';
+import { useShortcuts } from './Shortcut';
+import { SidebarResizeHandle } from './SidebarResizeHandle';
 
 const DEFAULT_PORTS: Record<DriverId, number> = { postgres: 5432, mysql: 3306, mssql: 1433, databricks: 443 };
 
@@ -35,16 +37,17 @@ function blankProfile(driver: DriverId): ConnectionProfile {
 }
 
 function describe(p: ConnectionProfile): string {
-  if (p.driver === 'databricks') return `${p.host || '—'} · ${p.authMode === 'oauth-m2m' ? 'OAuth M2M' : 'Access token'}`;
-  return `${p.user}@${p.host}:${p.port}${'database' in p && p.database ? '/' + p.database : ''}`;
+  if (p.driver === 'databricks') return `${p.host || '—'}${p.catalog ? ' : ' + p.catalog : ''}`;
+  return `${p.host || '—'}:${p.port}${p.database ? ' : ' + p.database : ''}`;
 }
 
-export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
+export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew?: boolean; initialProfileId?: string }) {
+  const sidebarWidth = useApp((s) => s.sidebarWidth);
   const { profiles, loadProfiles, connections, connecting, connectErrors, connect, setScreen, moveProfile, disconnectProfile, toast } = useApp();
   const connectedProfiles = new Set(Object.values(connections).map(({ profileId }) => profileId));
   const connectingProfiles = new Set(Object.entries(connecting).flatMap(([id, busy]) => busy ? [connections[id]?.profileId ?? id] : []));
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(initialProfileId ?? null);
+  const [selectedIds, setSelectedIds] = useState<string[]>(initialProfileId ? [initialProfileId] : []);
   const anchor = useRef<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -201,7 +204,8 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
 
   return (
     <div className="conn-screen">
-      <div className="conn-list" onContextMenu={(e) => { e.preventDefault(); openMenu(null, e.clientX, e.clientY); }}>
+      <div className="conn-list" style={{ width: sidebarWidth }} onContextMenu={(e) => { e.preventDefault(); openMenu(null, e.clientX, e.clientY); }}>
+        <SidebarResizeHandle />
         <div className="sidebar-top drag">
           <span className="spacer" />
           {anyOpen && (
@@ -328,11 +332,12 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
               }}
               onDoubleClick={() => void connect(profile.id)}
             >
+              <span className="c-logo"><DriverIcon driver={profile.driver} size={40} /></span>
               <div className="c-name">
-                <DriverIcon driver={profile.driver} size={16} />
-                <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                <span className="c-title" title={profile.name || '(unnamed)'}>
                   {profile.name || '(unnamed)'}
                 </span>
+                <EnvBadge env={profile.env} />
                 <span className="conn-status">
                   {connectingProfiles.has(profile.id) ? (
                     <span role="status" aria-label="Connecting" title="Connecting…"><Spinner /></span>
@@ -341,10 +346,7 @@ export function ConnectionsScreen({ initialNew }: { initialNew?: boolean }) {
                   ) : null}
                 </span>
               </div>
-              <div className="row">
-                <EnvBadge env={profile.env} />
-                <span className="c-sub">{describe(profile)}</span>
-              </div>
+              <span className="c-sub" title={describe(profile)}>{describe(profile)}</span>
             </div>
               ))}
             </div>
@@ -514,12 +516,12 @@ function ConnectionTransfer({ mode, selectedIds, onClose }: {
         const profiles = `Imported ${result.imported} ${result.imported === 1 ? 'connection' : 'connections'}${details.length ? ` (${details.join(', ')})` : ''}.`;
         const passwords = result.passwordsSaved ? ` Saved ${result.passwordsSaved} database ${result.passwordsSaved === 1 ? 'password' : 'passwords'} in Keychain.` : '';
         const environments = result.environmentsUpdated ? ` Updated ${result.environmentsUpdated} ${result.environmentsUpdated === 1 ? 'environment' : 'environments'}.` : '';
-        toast(result.imported || result.passwordsSaved || result.environmentsUpdated ? 'ok' : 'info', profiles + passwords + environments);
+        toast(result.imported || result.passwordsSaved || result.environmentsUpdated ? 'ok' : 'info', profiles + passwords + environments, 'Import');
         if (result.passwordsFailed) toast('error', `Keychain could not save ${result.passwordsFailed} database ${result.passwordsFailed === 1 ? 'password' : 'passwords'}. Try importing the file again.`);
       } else {
         const result = await api.profiles.exportTablePlus(scope === 'selected' ? selectedIds : null, password);
         if (!result) return;
-        toast('ok', `Exported ${result.exported} ${result.exported === 1 ? 'connection' : 'connections'}.${result.skipped ? ` ${result.skipped} Databricks ${result.skipped === 1 ? 'profile' : 'profiles'} skipped.` : ''}`);
+        toast('ok', `Exported ${result.exported} ${result.exported === 1 ? 'connection' : 'connections'}.${result.skipped ? ` ${result.skipped} Databricks ${result.skipped === 1 ? 'profile' : 'profiles'} skipped.` : ''}`, 'Export');
         if (result.reviewTls) toast('info', `Review SSL settings in TablePlus for ${result.reviewTls} ${result.reviewTls === 1 ? 'connection' : 'connections'}.`);
       }
       onClose();
@@ -610,6 +612,7 @@ function ProfileEditor({
   onDeleted?: () => void;
   onDuplicate?: () => void;
 }) {
+  const sc = useShortcuts();
   const { loadProfiles, connect, disconnectProfile, toast } = useApp();
   const [p, setP] = useState<ConnectionProfile>(initial);
   const [secrets, setSecrets] = useState<Secrets>({});
@@ -872,7 +875,7 @@ function ProfileEditor({
             Cancel
           </button>
         )}
-        <button ref={saveButton} className="btn" aria-keyshortcuts="Meta+S" title="Save connection (⌘S)" onClick={() => void save(false)} disabled={saving || (!isNew && !dirty)}>
+        <button ref={saveButton} className="btn" aria-keyshortcuts={sc.aria('save')} title={sc.hint('Save connection', 'save')} onClick={() => void save(false)} disabled={saving || (!isNew && !dirty)}>
           Save
         </button>
         <button className="btn primary" onClick={() => void save(true)} disabled={saving} aria-busy={saving}>

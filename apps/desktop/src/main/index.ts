@@ -3,8 +3,13 @@ import path from 'node:path';
 import { registerIpc } from './ipc';
 import { SessionManager } from './sessions';
 import { createUpdateCheck } from './updates';
+import { SHORTCUTS, effectiveAccelerator, matchesAccelerator, sanitizeOverrides, type KeybindingOverrides } from '../shared/keybindings';
 
 app.setName('EarthQL');
+// Chromium's swipe-to-navigate-pages gesture intercepts two-finger horizontal trackpad
+// swipes over scrollable content (e.g. the data grid), making horizontal scrolling feel
+// broken. There is no in-app page history to navigate, so disable it outright.
+app.commandLine.appendSwitch('disable-features', 'OverscrollHistoryNavigation');
 
 let mainWindow: BrowserWindow | null = null;
 const sessions = new SessionManager((channel, payload) => {
@@ -52,6 +57,23 @@ function createWindow(): void {
     mainWindow?.webContents.send('menu:command', 'close-window');
   });
 
+  // Handle Reconnect before the focused editor or Chromium can consume the key.
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (keybindingsSuspended || input.type !== 'keyDown') return;
+    const accelerator = effectiveAccelerator('reconnect', keybindings);
+    const key = {
+      key: input.key,
+      code: input.code,
+      metaKey: input.meta,
+      ctrlKey: input.control,
+      altKey: input.alt,
+      shiftKey: input.shift,
+    };
+    if (!matchesAccelerator(key, accelerator, process.platform === 'darwin')) return;
+    event.preventDefault();
+    if (!input.isAutoRepeat) mainWindow?.webContents.send('menu:command', 'reconnect');
+  });
+
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
   // Never navigate the app window away; open links in the default browser.
@@ -67,9 +89,14 @@ function createWindow(): void {
   else void mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
 }
 
-function buildMenu(): void {
-  const send = (cmd: string) => () => mainWindow?.webContents.send('menu:command', cmd);
-  const checkForUpdates = createUpdateCheck(async () => {
+let keybindings: KeybindingOverrides = {};
+// While Settings records a keystroke every accelerator is dropped, so the key reaches the page
+// instead of firing the action it is currently bound to.
+let keybindingsSuspended = false;
+let checkForUpdates: ReturnType<typeof createUpdateCheck>;
+
+function setupUpdates(): void {
+  checkForUpdates = createUpdateCheck(async () => {
     quitting = true;
     await closeSessionsForQuit();
   }, () => { quitting = false; });
@@ -77,13 +104,24 @@ function buildMenu(): void {
     ipcMain.handle('updates:status', () => ({ ok: true, value: { available: false, busy: false } }));
     ipcMain.handle('updates:install', () => ({ ok: true, value: undefined }));
   }
+}
+
+function buildMenu(): void {
+  const send = (cmd: string) => () => mainWindow?.webContents.send('menu:command', cmd);
+  // Every rebindable menu item comes from the keybinding registry in ../shared/keybindings.
+  const item = (id: string): Electron.MenuItemConstructorOptions => {
+    const def = SHORTCUTS.find((d) => d.id === id);
+    if (!def?.command) throw new Error(`No menu command registered for shortcut "${id}"`);
+    const accelerator = keybindingsSuspended ? null : effectiveAccelerator(id, keybindings);
+    return { label: def.menuLabel ?? def.label, ...(accelerator ? { accelerator } : {}), click: send(def.command) };
+  };
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
       submenu: [
         { role: 'about' },
         { type: 'separator' },
-        { label: 'Preferences…', accelerator: 'Cmd+,', click: send('open-settings') },
+        item('open-settings'),
         { type: 'separator' },
         { role: 'services' },
         { type: 'separator' },
@@ -97,34 +135,39 @@ function buildMenu(): void {
     {
       label: 'File',
       submenu: [
-        { label: 'New Connection…', accelerator: 'CmdOrCtrl+Shift+N', click: send('new-connection') },
-        { label: 'New SQL Editor Tab', accelerator: 'CmdOrCtrl+T', click: send('new-sql-tab') },
+        item('new-connection'),
+        item('new-sql-tab'),
+        item('reopen-closed-tab'),
         { type: 'separator' },
-        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: send('close-tab') },
-        { label: 'Close All Tabs', accelerator: 'CmdOrCtrl+Shift+W', click: send('close-all-tabs') },
+        item('close-tab'),
+        item('close-all-tabs'),
       ],
     },
     { role: 'editMenu' },
     {
       label: 'Query',
       submenu: [
-        { label: 'Run Current', accelerator: 'CmdOrCtrl+Enter', click: send('run') },
-        { label: 'Run All', accelerator: 'CmdOrCtrl+Shift+Enter', click: send('run-all') },
-        { label: 'Cancel', accelerator: 'CmdOrCtrl+.', click: send('cancel') },
+        item('run'),
+        item('run-all'),
+        item('cancel'),
         { type: 'separator' },
-        { label: 'Beautify', accelerator: 'CmdOrCtrl+I', click: send('beautify') },
+        item('beautify'),
+        item('uglify'),
         { type: 'separator' },
-        { label: 'Add to Queries', accelerator: 'CmdOrCtrl+S', click: send('save') },
-        { label: 'Save SQL as…', accelerator: 'CmdOrCtrl+Shift+S', click: send('save-sql-file') },
+        item('save'),
+        item('save-sql-file'),
       ],
     },
     {
       label: 'View',
       submenu: [
-        { label: 'Refresh', accelerator: 'CmdOrCtrl+R', click: send('refresh') },
+        item('refresh'),
+        item('reconnect'),
         { type: 'separator' },
-        { label: 'Split Left', accelerator: 'CmdOrCtrl+[', click: send('split-left') },
-        { label: 'Split Right', accelerator: 'CmdOrCtrl+]', click: send('split-right') },
+        item('split-left'),
+        item('split-right'),
+        item('split-up'),
+        item('split-down'),
         { type: 'separator' },
         { role: 'toggleDevTools' },
         { role: 'resetZoom' },
@@ -143,11 +186,24 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+ipcMain.handle('keybindings:apply', (_event, payload: unknown) => {
+  try {
+    const { overrides, suspended } = (payload ?? {}) as { overrides?: unknown; suspended?: unknown };
+    keybindings = sanitizeOverrides(overrides);
+    keybindingsSuspended = suspended === true;
+    buildMenu();
+    return { ok: true, value: undefined };
+  } catch (error) {
+    return { ok: false, error: { category: 'unknown', message: String((error as Error)?.message ?? error) } };
+  }
+});
+
 app.whenReady().then(() => {
   if (!app.isPackaged) {
     app.dock?.setIcon(path.join(app.getAppPath(), 'src', 'renderer', 'public', 'earthql.png'));
   }
   registerIpc(sessions);
+  setupUpdates();
   buildMenu();
   createWindow();
   app.on('activate', () => {

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, onMenuCommand } from '../api';
 import { connectionName, useApp, type Tab } from '../store';
 import { ConnectionsScreen } from './ConnectionsScreen';
@@ -7,11 +8,14 @@ import { Sidebar } from './Sidebar';
 import { SqlTab } from './SqlTab';
 import { TableTab } from './TableTab';
 import { TabBar } from './TabBar';
+import { PanelDropPreview } from './PanelDropPreview';
 import { ErrorBoundary } from './ErrorBoundary';
 import { FeedbackDialog } from './FeedbackDialog';
 import { SettingsDialog } from './SettingsDialog';
+import { NotificationsButton } from './NotificationsButton';
 import { UpdateButton } from './UpdateButton';
 import { Modal } from './common';
+import { Keys, useShortcuts } from './Shortcut';
 
 function GearIcon() {
   return (
@@ -28,39 +32,86 @@ function renderTabContent(t: Tab, active: boolean) {
   return (
     <ErrorBoundary label="this tab">
       {t.kind === 'table' && (
-        <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} active={active} refreshVersion={t.refreshVersion} />
+        <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} initialFilters={t.initialFilters} active={active} refreshVersion={t.refreshVersion} />
       )}
-      {t.kind === 'sql' && <SqlTab profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={active} refreshVersion={t.refreshVersion} />}
+      {t.kind === 'sql' && <SqlTab key={t.profileId} tabId={t.id} profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={active} refreshVersion={t.refreshVersion} />}
       {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} refreshVersion={t.refreshVersion} />}
     </ErrorBoundary>
   );
 }
 
-function tabTitle(t: Tab) {
-  if (t.customTitle) return t.customTitle;
-  if (t.kind === 'table') return t.object.name;
-  return t.kind === 'sql' ? t.title : 'New table';
+/** Reparent the host, keeping the editor/grid React tree mounted when a tab moves panels. */
+function MountedTab({ tab, host, visible, active }: { tab: Tab; host: HTMLDivElement | null; visible: boolean; active: boolean }) {
+  const [element] = useState(() => {
+    const element = document.createElement('div');
+    element.className = 'tab-pane';
+    return element;
+  });
+  useLayoutEffect(() => {
+    host?.appendChild(element);
+    return () => { element.remove(); };
+  }, [host, element]);
+  useLayoutEffect(() => { element.hidden = !visible; }, [element, visible]);
+  useLayoutEffect(() => {
+    const activate = () => {
+      if (visible && useApp.getState().activeTabId !== tab.id) useApp.getState().activateTab(tab.id);
+    };
+    element.addEventListener('pointerdown', activate, true);
+    element.addEventListener('focusin', activate, true);
+    return () => {
+      element.removeEventListener('pointerdown', activate, true);
+      element.removeEventListener('focusin', activate, true);
+    };
+  }, [element, tab.id, visible]);
+  return createPortal(renderTabContent(tab, active), element);
 }
 
 export function App() {
+  const sc = useShortcuts();
+  useEffect(() => {
+    const clearDrag = () => useApp.getState().setDraggedTabId(null);
+    window.addEventListener('dragend', clearDrag);
+    window.addEventListener('drop', clearDrag);
+    window.addEventListener('blur', clearDrag);
+    return () => {
+      window.removeEventListener('dragend', clearDrag);
+      window.removeEventListener('drop', clearDrag);
+      window.removeEventListener('blur', clearDrag);
+    };
+  }, []);
+
+  // The menu is built with default shortcuts at launch; push the saved overrides once the UI is up.
+  useEffect(() => {
+    void api.keybindings.apply(useApp.getState().keybindings).catch(() => undefined);
+  }, []);
   const { screen, tabs, activeTabId, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
   const { discardPrompt, resolveDiscard } = useApp();
-  const { splitPane, closeSplit } = useApp();
+  const { splitPane, closeSplit, focusedPane, focusPane, draggedTabId } = useApp();
+  const [mainHost, setMainHost] = useState<HTMLDivElement | null>(null);
+  const [splitHost, setSplitHost] = useState<HTMLDivElement | null>(null);
   const profiles = useApp((s) => s.profiles);
+  const editProfileId = useApp((s) => s.editProfileId);
   const [newRequested, setNewRequested] = useState(0);
   const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [splitWidth, setSplitWidth] = useState<number | null>(null);
-  const splitTab = splitPane ? tabs.find((t) => t.id === splitPane.tabId) : undefined;
+  const [splitHeight, setSplitHeight] = useState<number | null>(null);
+  const mainTabId = splitPane ? splitPane.mainTabId : activeTabId;
+  const mainTabs = tabs.filter((tab) => !splitPane?.tabIds.includes(tab.id));
   const mainSplitRef = useRef<HTMLDivElement>(null);
   const feedbackOpen = useRef(false);
 
   function startSplitResize(e: React.MouseEvent) {
     const rect = mainSplitRef.current!.getBoundingClientRect();
-    const fromRight = splitPane?.side === 'right';
+    const side = splitPane?.side;
     const move = (ev: MouseEvent) => {
-      const w = fromRight ? rect.right - ev.clientX : ev.clientX - rect.left;
-      setSplitWidth(Math.max(200, Math.min(w, rect.width - 200)));
+      if (side === 'up' || side === 'down') {
+        const h = side === 'down' ? rect.bottom - ev.clientY : ev.clientY - rect.top;
+        setSplitHeight(Math.max(120, Math.min(h, rect.height - 120)));
+      } else {
+        const w = side === 'right' ? rect.right - ev.clientX : ev.clientX - rect.left;
+        setSplitWidth(Math.max(200, Math.min(w, rect.width - 200)));
+      }
     };
     const up = () => {
       window.removeEventListener('mousemove', move);
@@ -102,44 +153,61 @@ export function App() {
         const s = useApp.getState();
         if (cmd === 'new-connection') {
           s.setScreen('connections');
+          useApp.setState({ editProfileId: undefined });
           setNewRequested((n) => n + 1);
         }
         if (cmd === 'new-sql-tab' && s.activeProfileId && s.connections[s.activeProfileId]) s.newSqlTab(s.activeProfileId);
         if (cmd === 'close-tab' && s.activeTabId && s.screen === 'workspace') s.closeTab(s.activeTabId);
         if (cmd === 'close-all-tabs' && s.screen === 'workspace') s.closeTabs(s.tabs.map(({ id }) => id));
+        if (cmd === 'reopen-closed-tab' && s.screen === 'workspace') s.reopenClosedTab();
+        if (cmd === 'reconnect' && s.screen === 'workspace' && s.activeProfileId && s.connections[s.activeProfileId] && !s.connecting[s.activeProfileId]) {
+          const id = s.activeProfileId;
+          void s.connect(id).then((ok) => {
+            const error = useApp.getState().connectErrors[id];
+            if (ok) s.toast('ok', `Reconnected to ${connectionName(id)}.`);
+            else if (error) s.toast('error', error.message);
+          });
+        }
         if (cmd === 'refresh' && s.activeTabId && s.screen === 'workspace') s.refreshTab(s.activeTabId);
         if (cmd === 'split-left' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'left');
         if (cmd === 'split-right' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'right');
+        if (cmd === 'split-up' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'up');
+        if (cmd === 'split-down' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'down');
       }),
     [openFeedback],
   );
 
+  const splitVertical = splitPane?.side === 'up' || splitPane?.side === 'down';
+  const splitFirst = splitPane?.side === 'left' || splitPane?.side === 'up';
+  const splitPaneEl = splitPane && (
+    <div className={`split-pane${splitVertical ? ' vertical' : ''}${focusedPane === 'split' ? ' focused' : ''}`}
+      style={splitVertical ? { height: splitHeight ?? undefined } : { width: splitWidth ?? undefined }}
+      onPointerDownCapture={(event) => { if (!(event.target instanceof Element && event.target.closest('.new-sql-tab'))) focusPane('split'); }} onFocusCapture={(event) => { if (!event.target.closest('.new-sql-tab') && useApp.getState().focusedPane !== 'split') focusPane('split'); }}>
+      <div className="panel-tab-bar"><TabBar pane="split" />
+        <button type="button" className="btn ghost icon merge-panel" aria-label="Merge panels" title="Merge panels" onClick={closeSplit}>✕</button>
+      </div>
+      <div className="tab-content" ref={setSplitHost}><PanelDropPreview key={draggedTabId ?? 'idle'} pane="split" /></div>
+    </div>
+  );
+  const splitDividerEl = splitPaneEl && <div className={`split-divider${splitVertical ? ' row' : ''}`} role="separator" aria-label="Resize panels" aria-orientation={splitVertical ? 'horizontal' : 'vertical'} onMouseDown={startSplitResize} />;
 
   return (
     <div className="app">
       <div className="app-content">
       {screen === 'connections' ? (
-        <ConnectionsScreen key={newRequested} initialNew={newRequested > 0} />
+        <ConnectionsScreen key={newRequested} initialNew={!editProfileId && newRequested > 0} initialProfileId={editProfileId} />
       ) : (
         <>
           <Sidebar />
           <main className="main">
-            <TabBar />
-            <div className={`main-split${splitPane ? ' has-split' : ''}`} ref={mainSplitRef}>
-              {splitPane && splitTab && splitPane.side === 'left' && (
-                <>
-                  <div className="split-pane" style={{ width: splitWidth ?? undefined }}>
-                    <div className="split-pane-head">
-                      <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tabTitle(splitTab)}</span>
-                      <button type="button" className="btn ghost icon" aria-label="Close split" title="Close split" onClick={closeSplit}>✕</button>
-                    </div>
-                    <div className="tab-content"><div className="tab-pane">{renderTabContent(splitTab, false)}</div></div>
-                  </div>
-                  <div className="split-divider" onMouseDown={startSplitResize} />
-                </>
-              )}
-              <div className="tab-content" style={splitPane ? { flex: 1, minWidth: 0 } : undefined}>
-                {tabs.length === 0 && (
+            <div className={`main-split${splitPane ? ' has-split' : ''}${splitVertical ? ' vertical' : ''}`} ref={mainSplitRef}>
+              {splitFirst && <>{splitPaneEl}{splitDividerEl}</>}
+              <div className={`workspace-panel${focusedPane === 'main' ? ' focused' : ''}`} onPointerDownCapture={(event) => { if (!(event.target instanceof Element && event.target.closest('.new-sql-tab'))) focusPane('main'); }}
+                onFocusCapture={(event) => { if (!event.target.closest('.new-sql-tab') && useApp.getState().focusedPane !== 'main') focusPane('main'); }}>
+                <TabBar pane="main" />
+                <div className="tab-content" ref={setMainHost}>
+                <PanelDropPreview key={draggedTabId ?? 'idle'} pane="main" />
+                {mainTabs.length === 0 && (
                   <div className="welcome" style={{ height: '100%' }}>
                     <h2>{activeProfileId ? connectionName(activeProfileId) : 'EarthQL'}</h2>
                     <p>Pick a table or view in the sidebar, or open a SQL editor.</p>
@@ -156,42 +224,40 @@ export function App() {
                     <p className="muted small">Right-click a schema or database to create a table.</p>
                   </div>
                 )}
-                {tabs.map((t) => (
-                  <div key={t.id} className="tab-pane" hidden={t.id !== activeTabId}>
-                    {renderTabContent(t, t.id === activeTabId)}
-                  </div>
-                ))}
+                </div>
               </div>
-              {splitPane && splitTab && splitPane.side === 'right' && (
-                <>
-                  <div className="split-divider" onMouseDown={startSplitResize} />
-                  <div className="split-pane" style={{ width: splitWidth ?? undefined }}>
-                    <div className="split-pane-head">
-                      <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tabTitle(splitTab)}</span>
-                      <button type="button" className="btn ghost icon" aria-label="Close split" title="Close split" onClick={closeSplit}>✕</button>
-                    </div>
-                    <div className="tab-content"><div className="tab-pane">{renderTabContent(splitTab, false)}</div></div>
-                  </div>
-                </>
-              )}
+              {!splitFirst && <>{splitDividerEl}{splitPaneEl}</>}
             </div>
           </main>
+          {tabs.map((tab) => {
+            const inSplit = !!splitPane?.tabIds.includes(tab.id);
+            const visible = tab.id === (inSplit ? splitPane?.tabId : mainTabId);
+            return <MountedTab key={tab.id} tab={tab} host={inSplit ? splitHost : mainHost} visible={visible} active={visible && tab.id === activeTabId} />;
+          })}
         </>
       )}
       </div>
       <footer className="app-footer">
-        <UpdateButton />
-        <button className="btn small ghost no-drag" aria-keyshortcuts="Meta+," onClick={() => setSettingsOpen(true)}>
+        <button className="btn small ghost no-drag" aria-keyshortcuts={sc.aria('open-settings')} onClick={() => setSettingsOpen(true)}>
           <GearIcon /> Settings
         </button>
+        <button className="btn small ghost no-drag" onClick={openFeedback}>
+          <svg aria-hidden="true" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeLinejoin="round">
+            <path d="M2 2.5h12v8.5H7l-3 2.5V11H2zM8 4.5v3m0 1v1" />
+          </svg>
+          Feedback &amp; Bug Report
+        </button>
         <span className="spacer" />
-        <button className="btn small no-drag" onClick={openFeedback}>Send Feedback</button>
+        <UpdateButton />
+        <NotificationsButton />
       </footer>
       <div className="toasts">
         {toasts.map((t) => (
-          <div key={t.id} className={`toast ${t.kind}`}>
+          <button type="button" key={t.id} className={`toast ${t.kind}`}
+            aria-label={`Dismiss notification: ${t.text}`} title="Dismiss notification"
+            onClick={() => useApp.getState().dismissToast(t.id)}>
             {t.text}
-          </div>
+          </button>
         ))}
       </div>
       {discardPrompt && (
@@ -200,8 +266,8 @@ export function App() {
           <button className="btn danger" onClick={() => resolveDiscard(true)}>Discard changes</button>
         </>}>
           <p>Discard all changes?</p>
-          <p className="muted small">Your unsaved cell edits will be lost.</p>
-          <div className="discard-save-tip">Save your changes with <kbd>⌘S</kbd> or the <strong>Save</strong> button above the table.</div>
+          <p className="muted small">Your unsaved Data and Structure changes will be lost.</p>
+          <div className="discard-save-tip">Save your changes with {sc.label('save') && <><Keys keys={sc.label('save')} /> or </>}the <strong>Save</strong> button above the table.</div>
         </Modal>
       )}
       {feedback && <FeedbackDialog screenshot={feedback.screenshot} onClose={() => { feedbackOpen.current = false; setFeedback(null); }} />}

@@ -13,6 +13,7 @@ import type {
   ErrorInfo,
   ExecContext,
   Filter,
+  GridRowDelete,
   GridRowUpdate,
   InsertSpec,
   ObjectPath,
@@ -168,8 +169,16 @@ export interface EarthQLApi {
     install(): Promise<void>;
     onStatus(cb: (status: UpdateStatus) => void): () => void;
   };
+  keybindings: {
+    /**
+     * Rebuilds the native menu with these shortcut overrides. `suspended` strips every accelerator
+     * so a keystroke can be recorded in Settings without also triggering its current menu action.
+     */
+    apply(overrides: Record<string, string | null>, suspended?: boolean): Promise<void>;
+  };
   platform: string;
   profiles: {
+    setDefaultDatabase(profileId: string, database: string): Promise<ProfileSummary>;
     list(): Promise<ProfileSummary[]>;
     importTablePlus(password: string): Promise<ConnectionImportResult | null>;
     exportTablePlus(profileId: string | string[] | null, password: string): Promise<ConnectionExportResult | null>;
@@ -203,11 +212,14 @@ export interface EarthQLApi {
     onPhase(cb: (e: { runId: string; phase: QueryPhase; statementIndex: number }) => void): () => void;
     /** Writes `sql` to a `.sql` file the user picks via a native save dialog. */
     saveFile(sql: string, suggestedName: string): Promise<SaveSqlFileResult>;
+    /** Formats already-loaded rows as INSERT statement text, dialect-quoted, for "Copy as INSERT Statement". */
+    rowsAsInsert(profileId: string, object: ObjectPath, columns: ResultColumn[], rows: Cell[][]): Promise<string>;
   };
   write: {
     previewInsert(profileId: string, spec: InsertSpec): Promise<BuiltStatement>;
     insert(profileId: string, spec: InsertSpec): Promise<WriteResult>;
     updateCells(profileId: string, object: ObjectPath, rows: GridRowUpdate[]): Promise<WriteResult>;
+    deleteRows(profileId: string, object: ObjectPath, rows: GridRowDelete[]): Promise<WriteResult>;
     previewCreate(profileId: string, spec: CreateTableSpec): Promise<BuiltStatement>;
     create(profileId: string, spec: CreateTableSpec): Promise<WriteResult>;
   };
@@ -221,6 +233,7 @@ export interface EarthQLApi {
     remove(profileId: string, id: string): Promise<void>;
   };
   tableActions: {
+    saveStructure(profileId: string, object: ObjectPath, edits: import('./table-actions').StructureEdit[]): Promise<void>;
     run(profileId: string, request: import('./table-actions').TableActionRequest): Promise<WriteResult>;
   };
   tableFiles: {

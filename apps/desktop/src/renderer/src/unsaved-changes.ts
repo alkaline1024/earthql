@@ -6,11 +6,11 @@ export function hasUnsavedChanges(draft: GridDraft | undefined): boolean {
 }
 
 export function objectHasUnsavedChanges(
-  tabs: Tab[], drafts: Record<string, GridDraft>, profileId: string, path: Partial<ObjectPath>, kind: string,
+  tabs: Tab[], drafts: Record<string, GridDraft>, profileId: string, path: Partial<ObjectPath>, kind: string, structureTabs?: Record<string, true | 'saving'>,
 ): boolean {
   if (kind !== 'table' && kind !== 'view') return false;
   return tabs.some((tab) => tab.kind === 'table' && tab.profileId === profileId && tab.objectKind === kind
     && tab.object.catalog === path.catalog && tab.object.database === path.database
     && tab.object.schema === path.schema && tab.object.name === path.name
-    && hasUnsavedChanges(drafts[tab.id]));
+    && (hasUnsavedChanges(drafts[tab.id]) || !!structureTabs?.[tab.id]));
 }

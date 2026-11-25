@@ -451,6 +451,10 @@ class PostgresConnection implements DriverConnection {
         `SELECT con.conname AS name, con.contype AS type, pg_get_constraintdef(con.oid) AS def,
                 ARRAY(SELECT a.attname::text FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
                       JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum ORDER BY k.ord) AS cols,
+                (SELECT n.nspname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = con.confrelid) AS rschema,
+                (SELECT c.relname FROM pg_class c WHERE c.oid = con.confrelid) AS rtable,
+                ARRAY(SELECT a.attname::text FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
+                      JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum ORDER BY k.ord) AS rcols,
                 CASE WHEN con.confrelid <> 0 THEN con.confrelid::regclass::text END AS ref
          FROM pg_constraint con WHERE con.conrelid = $1 ORDER BY con.contype, con.conname`,
         [oid],
@@ -459,7 +463,7 @@ class PostgresConnection implements DriverConnection {
       const typeName: Record<string, string> = { p: 'PRIMARY KEY', f: 'FOREIGN KEY', u: 'UNIQUE', c: 'CHECK', x: 'EXCLUDE', n: 'NOT NULL' };
       constraints = rows
         .filter((r) => r.type !== 'n')
-        .map((r) => ({ name: r.name, type: typeName[r.type] ?? r.type, columns: pgArray(r.cols), definition: r.def, references: r.ref ?? undefined }));
+        .map((r) => ({ name: r.name, type: typeName[r.type] ?? r.type, columns: pgArray(r.cols), definition: r.def, references: r.ref ?? undefined, foreignTarget: r.rschema && r.rtable ? { object: { database: db, schema: r.rschema, name: r.rtable }, columns: pgArray(r.rcols) } : undefined }));
       if (constraints.length === 0) constraintsStatus = { state: 'empty' };
     } catch (e) {
       constraintsStatus = { state: 'denied', message: this.classifyError(e).message };

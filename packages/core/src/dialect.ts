@@ -11,6 +11,7 @@ import type {
   SqlParam,
   TypeOption,
 } from './types';
+import { checkRawCondition } from './raw-filter';
 import { kindFromTypeName } from './values';
 
 /**
@@ -33,6 +34,10 @@ export abstract class Dialect {
   abstract castToText(expr: string): string;
   /** Case-insensitive LIKE comparison of `textExpr` with a pattern placeholder. */
   abstract ilike(textExpr: string, placeholder: string): string;
+  /** Case-sensitive LIKE; most engines already compare case-sensitively, so that is the default. */
+  likeCaseSensitive(textExpr: string, placeholder: string): string {
+    return `${textExpr} LIKE ${placeholder}`;
+  }
   /** Path parts that appear in SQL text, outermost first. */
   abstract pathParts(p: ObjectPath): string[];
 
@@ -85,16 +90,33 @@ export abstract class Dialect {
 
     const selectList = columns && columns.length > 0 ? columns.map((c) => this.browseSelectExpr(c)).join(', ') : '*';
 
-    const where: string[] = [];
+    // Consecutive AND-ed filters form a group; groups are OR-ed. A skipped filter drops out entirely,
+    // so the next one joins whatever came before it.
+    const groups: string[][] = [];
     for (const f of req.filters) {
-      if (known && !known.has(f.column)) {
-        errors.push(`Unknown column in filter: ${f.column}`);
-        continue;
+      let clause: string | null;
+      if (f.op === 'raw') {
+        const raw = (f.value ?? '').trim();
+        const problem = checkRawCondition(raw);
+        if (problem) {
+          errors.push(`Raw SQL filter: ${problem}`);
+          continue;
+        }
+        // Parenthesised so its own OR can't leak into the other filters; the newline ends a trailing `--` comment.
+        clause = `(${raw}${raw.includes('--') ? '\n' : ''})`;
+      } else {
+        if (known && !known.has(f.column)) {
+          errors.push(`Unknown column in filter: ${f.column}`);
+          continue;
+        }
+        clause = this.filterClause(f, params);
+        if (!clause) errors.push(`Filter on ${f.column} needs a value`);
       }
-      const clause = this.filterClause(f, params);
-      if (clause) where.push(clause);
-      else errors.push(`Filter on ${f.column} needs a value`);
+      if (!clause) continue;
+      if (!groups.length || f.join === 'or') groups.push([clause]);
+      else groups[groups.length - 1].push(clause);
     }
+    const where = groups.map((group) => (groups.length > 1 && group.length > 1 ? `(${group.join(' AND ')})` : group.join(' AND '))).join(' OR ');
 
     let orderBy = '';
     if (req.sort) {
@@ -102,7 +124,7 @@ export abstract class Dialect {
       else orderBy = ` ORDER BY ${this.quoteIdent(req.sort.column)} ${req.sort.dir === 'desc' ? 'DESC' : 'ASC'}`;
     }
 
-    const base = `SELECT ${selectList} FROM ${this.qualify(req.object)}${where.length ? ` WHERE ${where.join(' AND ')}` : ''}`;
+    const base = `SELECT ${selectList} FROM ${this.qualify(req.object)}${where ? ` WHERE ${where}` : ''}`;
     const limit = Math.max(1, Math.floor(req.pageSize)) + 1; // +1 to detect "has more"
     const offset = Math.max(0, Math.floor(req.offset));
     return { sql: this.paginate(base, orderBy, limit, offset), params, target: this.displayTarget(req.object), errors, warnings: [] };
@@ -134,9 +156,40 @@ export abstract class Dialect {
       case 'contains':
         if (f.value === undefined || f.value === '') return null;
         return this.ilike(this.castToText(col), bind(`%${this.escapeLike(f.value)}%`)) + this.likeEscapeClause();
+      case 'not_contains':
+        if (f.value === undefined || f.value === '') return null;
+        return `NOT (${this.ilike(this.castToText(col), bind(`%${this.escapeLike(f.value)}%`))}${this.likeEscapeClause()})`;
       case 'starts_with':
         if (f.value === undefined || f.value === '') return null;
         return this.ilike(this.castToText(col), bind(`${this.escapeLike(f.value)}%`)) + this.likeEscapeClause();
+      case 'ends_with':
+        if (f.value === undefined || f.value === '') return null;
+        return this.ilike(this.castToText(col), bind(`%${this.escapeLike(f.value)}`)) + this.likeEscapeClause();
+      case 'contains_cs':
+        if (f.value === undefined || f.value === '') return null;
+        return this.likeCaseSensitive(this.castToText(col), bind(`%${this.escapeLike(f.value)}%`)) + this.likeEscapeClause();
+      case 'not_contains_cs':
+        if (f.value === undefined || f.value === '') return null;
+        return `NOT (${this.likeCaseSensitive(this.castToText(col), bind(`%${this.escapeLike(f.value)}%`))}${this.likeEscapeClause()})`;
+      case 'starts_with_cs':
+        if (f.value === undefined || f.value === '') return null;
+        return this.likeCaseSensitive(this.castToText(col), bind(`${this.escapeLike(f.value)}%`)) + this.likeEscapeClause();
+      case 'ends_with_cs':
+        if (f.value === undefined || f.value === '') return null;
+        return this.likeCaseSensitive(this.castToText(col), bind(`%${this.escapeLike(f.value)}`)) + this.likeEscapeClause();
+      case 'like':
+        if (f.value === undefined || f.value === '') return null;
+        return `${this.castToText(col)} LIKE ${bind(f.value)}${this.likeEscapeClause()}`;
+      case 'between':
+      case 'not_between':
+        if (!f.value || !f.value2) return null;
+        return `${col} ${f.op === 'not_between' ? 'NOT BETWEEN' : 'BETWEEN'} ${bind(f.value)} AND ${bind(f.value2)}`;
+      case 'in':
+      case 'not_in': {
+        const values = (f.value ?? '').split(',').map((v) => v.trim()).filter((v) => v !== '');
+        if (!values.length) return null;
+        return `${col} ${f.op === 'not_in' ? 'NOT IN' : 'IN'} (${values.map(bind).join(', ')})`;
+      }
       case '=':
       case '!=':
       case '<':

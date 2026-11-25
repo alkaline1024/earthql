@@ -1,14 +1,21 @@
 import { describe, expect, it } from 'vitest';
 import {
   PullBuffer,
+  checkRawCondition,
   ScriptRun,
   isReadOnlyStatement,
   previewWithParams,
   redact,
+  buildGridDeletes,
   splitStatements,
   statementAt,
   toCsv,
+  toHtmlTable,
+  toJsonRows,
+  toMarkdownTable,
+  toTsv,
   type CursorChunk,
+  type TableStructure,
   type DriverConnection,
   type QueryCursor,
 } from '@earthql/core';
@@ -101,6 +108,42 @@ describe('csv', () => {
   });
 });
 
+describe('grid-copy serializers', () => {
+  const columns = [
+    { name: 'id', type: 'int', kind: 'number' as const },
+    { name: 'name', type: 'text', kind: 'text' as const },
+  ];
+  const rows = [
+    [1, 'a|b'],
+    [null, 'line1\nline2'],
+  ];
+
+  it('toTsv joins columns with tabs and rows with newlines, NULL as text', () => {
+    expect(toTsv(columns, rows)).toBe('1\ta|b\nNULL\tline1\nline2');
+  });
+
+  it('toJsonRows produces one object per row keyed by column name', () => {
+    expect(JSON.parse(toJsonRows(columns, rows))).toEqual([
+      { id: 1, name: 'a|b' },
+      { id: null, name: 'line1\nline2' },
+    ]);
+  });
+
+  it('toHtmlTable escapes HTML-significant characters', () => {
+    const html = toHtmlTable([{ name: '<col>', type: 'text', kind: 'text' as const }], [['<b>&"\'']]);
+    expect(html).toContain('&lt;col&gt;');
+    expect(html).toContain('&lt;b&gt;&amp;&quot;&#39;');
+  });
+
+  it('toMarkdownTable escapes pipes and newlines', () => {
+    const md = toMarkdownTable(columns, rows);
+    expect(md.split('\n')[0]).toBe('| id | name |');
+    expect(md.split('\n')[1]).toBe('| --- | --- |');
+    expect(md).toContain('a\\|b');
+    expect(md).toContain('line1<br>line2');
+  });
+});
+
 describe('dialect quoting and browse', () => {
   const req = {
     object: { database: 'db', schema: 'sales', catalog: 'main', name: 'or"ders' },
@@ -145,6 +188,203 @@ describe('dialect quoting and browse', () => {
   it('rejects unknown columns when structure is known', () => {
     const b = postgresDialect.buildBrowse({ ...req, filters: [{ column: 'nope', op: '=', value: '1' }] }, [{ name: 'id', type: 'int' }]);
     expect(b.errors.length).toBeGreaterThan(0);
+  });
+});
+
+describe('quick-filter operators', () => {
+  const base = { object: { schema: 'public', name: 't' }, sort: undefined, offset: 0, pageSize: 10 };
+  it('not_contains negates the LIKE predicate', () => {
+    const b = postgresDialect.buildBrowse({ ...base, filters: [{ column: 'name', op: 'not_contains', value: 'x' }] });
+    expect(b.sql).toContain(`WHERE NOT (CAST("name" AS TEXT) ILIKE $1 ESCAPE '\\')`);
+    expect(b.params).toEqual([{ value: '%x%' }]);
+  });
+  it('ends_with matches a trailing pattern', () => {
+    const b = postgresDialect.buildBrowse({ ...base, filters: [{ column: 'name', op: 'ends_with', value: 'x' }] });
+    expect(b.params).toEqual([{ value: '%x' }]);
+  });
+  it('in/not_in split a comma-separated value into bound parameters', () => {
+    const inB = postgresDialect.buildBrowse({ ...base, filters: [{ column: 'id', op: 'in', value: '1, 2 ,3' }] });
+    expect(inB.sql).toContain('"id" IN ($1, $2, $3)');
+    expect(inB.params).toEqual([{ value: '1' }, { value: '2' }, { value: '3' }]);
+    const notInB = postgresDialect.buildBrowse({ ...base, filters: [{ column: 'id', op: 'not_in', value: '1' }] });
+    expect(notInB.sql).toContain('"id" NOT IN ($1)');
+  });
+  it('in/not_in with no values produce no clause', () => {
+    const b = postgresDialect.buildBrowse({ ...base, filters: [{ column: 'id', op: 'in', value: '' }] });
+    expect(b.errors.length).toBeGreaterThan(0);
+    expect(b.sql).not.toContain('WHERE');
+  });
+});
+
+describe('filter AND / OR', () => {
+  const base = { object: { schema: 'public', name: 't' }, sort: undefined, offset: 0, pageSize: 10 };
+  const a = { column: 'a', op: '=' as const, value: '1' };
+  const b = { column: 'b', op: '=' as const, value: '2' };
+  const c = { column: 'c', op: '=' as const, value: '3' };
+
+  it('ANDs filters by default, as before', () => {
+    expect(postgresDialect.buildBrowse({ ...base, filters: [a, b] }).sql).toContain('WHERE "a" = $1 AND "b" = $2');
+    expect(postgresDialect.buildBrowse({ ...base, filters: [a, { ...b, join: 'and' }] }).sql).toContain('WHERE "a" = $1 AND "b" = $2');
+  });
+  it('ORs a filter marked join: or', () => {
+    const q = postgresDialect.buildBrowse({ ...base, filters: [a, { ...b, join: 'or' }] });
+    expect(q.sql).toContain('WHERE "a" = $1 OR "b" = $2');
+    expect(q.params).toEqual([{ value: '1' }, { value: '2' }]);
+  });
+  it('groups AND runs in parentheses when mixed with OR', () => {
+    expect(postgresDialect.buildBrowse({ ...base, filters: [a, b, { ...c, join: 'or' }] }).sql).toContain('WHERE ("a" = $1 AND "b" = $2) OR "c" = $3');
+    expect(postgresDialect.buildBrowse({ ...base, filters: [a, { ...b, join: 'or' }, c] }).sql).toContain('WHERE "a" = $1 OR ("b" = $2 AND "c" = $3)');
+  });
+  it('ignores the join on the first filter', () => {
+    expect(postgresDialect.buildBrowse({ ...base, filters: [{ ...a, join: 'or' }, b] }).sql).toContain('WHERE "a" = $1 AND "b" = $2');
+  });
+  it('lets the next filter join the previous kept one when a filter is skipped', () => {
+    const skipped = { column: 'x', op: 'in' as const, value: '' };
+    const q = postgresDialect.buildBrowse({ ...base, filters: [a, { ...skipped, join: 'or' }, { ...c, join: 'or' }] });
+    expect(q.sql).toContain('WHERE "a" = $1 OR "c" = $2');
+    expect(q.errors.length).toBe(1);
+  });
+  it('works for every driver and in export-all queries', () => {
+    const filters = [a, { ...b, join: 'or' as const }];
+    for (const d of [mysqlDialect, mssqlDialect, databricksDialect]) expect(d.buildBrowseAll({ object: base.object, filters }).sql).toMatch(/ OR /);
+  });
+});
+
+describe('operators: between, like and case-sensitive matching', () => {
+  const base = { object: { schema: 'public', name: 't' }, sort: undefined, offset: 0, pageSize: 10 };
+  const build = (d: Pick<typeof postgresDialect, 'buildBrowse'>, filter: Parameters<typeof postgresDialect.buildBrowse>[0]['filters'][number]) =>
+    d.buildBrowse({ ...base, filters: [filter] });
+
+  it('between / not between bind both bounds', () => {
+    const q = build(postgresDialect, { column: 'n', op: 'between', value: '1', value2: '9' });
+    expect(q.sql).toContain('"n" BETWEEN $1 AND $2');
+    expect(q.params).toEqual([{ value: '1' }, { value: '9' }]);
+    expect(build(postgresDialect, { column: 'n', op: 'not_between', value: '1', value2: '9' }).sql).toContain('"n" NOT BETWEEN $1 AND $2');
+  });
+  it('between needs both bounds', () => {
+    for (const f of [{ value: '1' }, { value2: '9' }, {}]) {
+      const q = build(postgresDialect, { column: 'n', op: 'between', ...f });
+      expect(q.errors.length).toBeGreaterThan(0);
+    }
+  });
+  it('like passes the pattern through untouched', () => {
+    const q = build(postgresDialect, { column: 'name', op: 'like', value: 'a%b_' });
+    expect(q.sql).toContain(`CAST("name" AS TEXT) LIKE $1 ESCAPE '\\'`);
+    expect(q.params).toEqual([{ value: 'a%b_' }]);
+  });
+  it('case-sensitive variants use the engine-specific comparison', () => {
+    const f = { column: 'name', op: 'contains_cs' as const, value: 'x' };
+    expect(build(postgresDialect, f).sql).toContain(`CAST("name" AS TEXT) LIKE $1`);
+    expect(build(postgresDialect, f).sql).not.toContain('ILIKE');
+    expect(build(mysqlDialect, f).sql).toContain('LIKE BINARY ?');
+    expect(build(mssqlDialect, f).sql).toContain('COLLATE Latin1_General_CS_AS LIKE');
+    expect(build(databricksDialect, f).sql).not.toContain('ILIKE');
+    expect(build(postgresDialect, { ...f, op: 'contains' }).sql).toContain('ILIKE');
+  });
+  it('builds each case-sensitive pattern', () => {
+    const pattern = (op: 'contains_cs' | 'not_contains_cs' | 'starts_with_cs' | 'ends_with_cs') =>
+      build(postgresDialect, { column: 'c', op, value: 'a_' }).params[0].value;
+    expect(pattern('contains_cs')).toBe('%a\\_%');
+    expect(pattern('starts_with_cs')).toBe('a\\_%');
+    expect(pattern('ends_with_cs')).toBe('%a\\_');
+    expect(build(postgresDialect, { column: 'c', op: 'not_contains_cs', value: 'x' }).sql).toContain('WHERE NOT (CAST("c" AS TEXT) LIKE $1');
+  });
+});
+
+describe('raw SQL filter', () => {
+  const base = { object: { schema: 'public', name: 't' }, sort: undefined, offset: 0, pageSize: 10 };
+  const raw = (value: string, join?: 'and' | 'or') => ({ column: '', op: 'raw' as const, value, join });
+  const a = { column: 'a', op: '=' as const, value: '1' };
+
+  it('embeds the condition in parentheses, with no bound parameters', () => {
+    const q = postgresDialect.buildBrowse({ ...base, filters: [raw("status = 'open' OR total > 100")] });
+    expect(q.sql).toContain(`WHERE (status = 'open' OR total > 100)`);
+    expect(q.params).toEqual([]);
+    expect(q.errors).toEqual([]);
+  });
+  it('keeps its own OR from leaking into the other filters', () => {
+    const q = postgresDialect.buildBrowse({ ...base, filters: [a, raw('x = 1 OR y = 2')] });
+    expect(q.sql).toContain('WHERE "a" = $1 AND (x = 1 OR y = 2)');
+  });
+  it('combines with other filters through AND / OR', () => {
+    expect(postgresDialect.buildBrowse({ ...base, filters: [a, raw('x = 1', 'or')] }).sql).toContain('WHERE "a" = $1 OR (x = 1)');
+  });
+  it('ends a trailing line comment so it cannot swallow the pagination', () => {
+    const q = postgresDialect.buildBrowse({ ...base, filters: [raw('x = 1 -- note')] });
+    expect(q.sql).toContain('WHERE (x = 1 -- note\n) LIMIT 11 OFFSET 0');
+  });
+  it('is not checked against the column list', () => {
+    const q = postgresDialect.buildBrowse({ ...base, filters: [raw('lower(name) = 1')] }, [{ name: 'id', type: 'int' }]);
+    expect(q.errors).toEqual([]);
+  });
+  it('rejects conditions that could escape the WHERE clause', () => {
+    for (const bad of ['', '   ', '1=1); DROP TABLE t; --', 'a = 1; select 2', 'a = 1) OR (b = 2', "a = 'x", 'a = 1 /* x']) {
+      const q = postgresDialect.buildBrowse({ ...base, filters: [raw(bad)] });
+      expect(q.errors.length, bad).toBeGreaterThan(0);
+      expect(q.sql, bad).not.toContain('WHERE');
+    }
+  });
+});
+
+describe('checkRawCondition', () => {
+  it('accepts ordinary conditions', () => {
+    for (const ok of ["status = 'open'", 'a IN (1, 2) AND (b > 3 OR c IS NULL)', "name = 'it''s; fine'", "note = '-- not a comment'", 'x = $$a;b$$', 'a = 1 -- trailing', '"odd;col" = 1']) {
+      expect(checkRawCondition(ok), ok).toBeNull();
+    }
+  });
+  it('explains what is wrong', () => {
+    expect(checkRawCondition('a = 1;')).toMatch(/single condition/);
+    expect(checkRawCondition('a = 1)')).toMatch(/unbalanced/i);
+    expect(checkRawCondition("a = 'x")).toMatch(/quote/);
+  });
+});
+
+describe('buildGridDeletes', () => {
+  const structure: TableStructure = {
+    object: { schema: 'public', name: 't' },
+    kind: 'table',
+    columns: [
+      { ordinal: 0, name: 'id', type: 'integer', nullable: false, defaultValue: null, isPrimaryKey: true, kind: 'number' },
+      { ordinal: 1, name: 'name', type: 'text', nullable: true, defaultValue: null, isPrimaryKey: false, kind: 'text' },
+    ],
+    columnsStatus: { state: 'ok' },
+    indexes: [],
+    indexesStatus: { state: 'ok' },
+    constraints: [{ name: 'pk', type: 'PRIMARY KEY', columns: ['id'] }],
+    constraintsStatus: { state: 'ok' },
+    gridUpdate: true,
+  };
+
+  it('deletes by primary key only', () => {
+    const [stmt] = buildGridDeletes(postgresDialect, structure, [{ key: [{ column: 'id', value: '1' }] }]);
+    expect(stmt.sql).toBe('DELETE FROM "public"."t" WHERE "id" = $1');
+    expect(stmt.params).toEqual([{ value: '1' }]);
+  });
+
+  it('builds one statement per row, in order', () => {
+    const stmts = buildGridDeletes(postgresDialect, structure, [
+      { key: [{ column: 'id', value: '1' }] },
+      { key: [{ column: 'id', value: '2' }] },
+    ]);
+    expect(stmts.map((s) => s.params)).toEqual([[{ value: '1' }], [{ value: '2' }]]);
+  });
+
+  it('rejects a duplicate row in the same batch', () => {
+    expect(() =>
+      buildGridDeletes(postgresDialect, structure, [{ key: [{ column: 'id', value: '1' }] }, { key: [{ column: 'id', value: '1' }] }]),
+    ).toThrow(/twice/);
+  });
+
+  it('rejects when the key shape does not match the table', () => {
+    expect(() => buildGridDeletes(postgresDialect, structure, [{ key: [{ column: 'wrong', value: '1' }] }])).toThrow(/primary key/);
+  });
+
+  it('refuses a table without an enforced primary key', () => {
+    expect(() => buildGridDeletes(postgresDialect, { ...structure, constraints: [] }, [{ key: [{ column: 'id', value: '1' }] }])).toThrow(/primary key/);
+  });
+
+  it('rejects an empty batch', () => {
+    expect(() => buildGridDeletes(postgresDialect, structure, [])).toThrow();
   });
 });
 

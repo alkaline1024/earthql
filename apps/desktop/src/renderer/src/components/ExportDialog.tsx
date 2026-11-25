@@ -49,7 +49,7 @@ export function ExportDialog({
       setResult(r);
       if (r.status === 'ok' || (r.status !== 'dialog-cancelled' && selected.scope.kind === 'cursor')) onExported?.(selected.id);
       if (r.status === 'ok') {
-        toast('ok', `Exported ${r.rows?.toLocaleString()} rows to ${r.path}`);
+        toast('ok', `Exported ${r.rows?.toLocaleString()} rows to ${r.path}`, 'Export');
         onClose();
       }
     } catch (e) {

@@ -91,6 +91,9 @@ export class MysqlDialect extends Dialect {
     // Case sensitivity follows the connection collation (utf8mb4 defaults are case-insensitive).
     return `${textExpr} LIKE ${placeholder}`;
   }
+  likeCaseSensitive(textExpr: string, placeholder: string): string {
+    return `${textExpr} LIKE BINARY ${placeholder}`;
+  }
   likeEscapeClause(): string {
     return ''; // backslash is MySQL's default LIKE escape character
   }
@@ -457,6 +460,10 @@ class MysqlConnection implements DriverConnection {
             map.set(r.name + r.type, c);
           }
           if (r.col) c.columns.push(r.col);
+          if (r.rdb && r.rtable && r.rcol) {
+            c.foreignTarget ??= { object: { database: r.rdb, name: r.rtable }, columns: [] };
+            c.foreignTarget.columns.push(r.rcol);
+          }
         }
         // CHECK constraint definitions (MySQL 8.0.16+)
         const checks = await this.q<any>(

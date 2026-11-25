@@ -1,4 +1,4 @@
-import { cellToText, isBinaryCell, makeError, type Cell, type ColumnInfo, type Dialect, type ResultColumn, type TableStructure } from '@earthql/core';
+import { cellToText, isBinaryCell, makeError, type Cell, type ColumnInfo, type Dialect, type ObjectPath, type ResultColumn, type TableStructure } from '@earthql/core';
 import { parse as parseCsv } from 'csv-parse/sync';
 import { parse as parseJson, isLosslessNumber, stringify as stringifyJson } from 'lossless-json';
 import type { TableExportOptions, TableImportFormat } from '../shared/api';
@@ -33,6 +33,19 @@ export function sqlValue(value: Cell, column: ColumnInfo | undefined, dialect: D
     return `0x${value.$binary}`;
   }
   return dialect.literalForType(cellToText(value), column?.type ?? 'TEXT');
+}
+
+/** One `INSERT INTO ... VALUES (...);` line for a single row, writable columns only. */
+export function insertStatementLine(object: ObjectPath, columns: ResultColumn[], row: Cell[], metadata: (ColumnInfo | undefined)[], dialect: Dialect): string {
+  const included = columns.map((column, index) => ({ column, index })).filter(({ index }) => !metadata[index]?.isGenerated || !!metadata[index]?.isIdentity);
+  if (!included.length) throw makeError('unsupported', 'No writable columns are available for an INSERT statement.');
+  const overriding = dialect.driver === 'postgres' && metadata.some((column) => column?.isIdentity) ? ' OVERRIDING SYSTEM VALUE' : '';
+  return `INSERT INTO ${dialect.qualify(object)} (${included.map(({ column }) => dialect.quoteIdent(column.name)).join(', ')})${overriding} VALUES (${included.map(({ index }) => sqlValue(row[index], metadata[index], dialect)).join(', ')});`;
+}
+
+/** Multiple rows as one newline-separated block of INSERT statements, for copying to the clipboard. */
+export function insertStatementText(object: ObjectPath, columns: ResultColumn[], rows: Cell[][], metadata: (ColumnInfo | undefined)[], dialect: Dialect): string {
+  return rows.map((row) => insertStatementLine(object, columns, row, metadata, dialect)).join('\n');
 }
 
 /** Metadata-based DDL; preserve known constraints and defaults rather than silently omitting them. */

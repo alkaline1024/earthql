@@ -1,6 +1,7 @@
-import type { CSSProperties } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { LIMITS, NO_LIMIT, type Theme, useApp } from '../store';
 import { Modal } from './common';
+import { ShortcutSettings } from './ShortcutSettings';
 
 const THEME_OPTIONS: { id: Theme; label: string; bg: string; primary?: string; split?: boolean }[] = [
   { id: 'system', label: 'System', bg: 'linear-gradient(135deg, #f5f6f3 50%, #202723 50%)', split: true },
@@ -20,9 +21,19 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setBeautifyUppercase = useApp((s) => s.setBeautifyUppercase);
   const sqlRunDefault = useApp((s) => s.sqlRunDefault);
   const setSqlRunDefault = useApp((s) => s.setSqlRunDefault);
+  const [tab, setTab] = useState<'general' | 'shortcuts'>('general');
 
   return (
     <Modal title="Settings" onClose={onClose}>
+      <div className="segmented settings-tabs" role="tablist" aria-label="Settings sections">
+        <button type="button" role="tab" aria-selected={tab === 'general'} className={tab === 'general' ? 'on' : ''} onClick={() => setTab('general')}>
+          General
+        </button>
+        <button type="button" role="tab" aria-selected={tab === 'shortcuts'} className={tab === 'shortcuts' ? 'on' : ''} onClick={() => setTab('shortcuts')}>
+          Shortcuts
+        </button>
+      </div>
+      {tab === 'shortcuts' ? <ShortcutSettings /> : (
       <div className="col" style={{ gap: 20 }}>
         <section>
           <h3 className="settings-h">Appearance</h3>
@@ -83,6 +94,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           </div>
         </section>
       </div>
+      )}
     </Modal>
   );
 }

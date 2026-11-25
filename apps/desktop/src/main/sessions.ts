@@ -9,6 +9,7 @@ import {
   makeError,
   redactInfo,
   runBrowse,
+  runGridDeletes,
   runGridUpdates,
   runWrite,
   secretFieldsFor,
@@ -16,6 +17,7 @@ import {
   toErrorInfo,
   type BrowseRequest,
   type CancelRequestResult,
+  type Cell,
   type ConnectionProfile,
   type CreateTableSpec,
   type CursorChunk,
@@ -23,6 +25,7 @@ import {
   type DriverId,
   type DriverModule,
   type ExecContext,
+  type GridRowDelete,
   type GridRowUpdate,
   type InsertSpec,
   type ObjectPath,
@@ -32,6 +35,7 @@ import {
   type Secrets,
   type TableStructure,
 } from '@earthql/core';
+import { insertStatementText } from './table-file-formats';
 import { postgresDriver } from '@earthql/driver-postgres';
 import { mysqlDriver } from '@earthql/driver-mysql';
 import { databricksDriver } from '@earthql/driver-databricks';
@@ -214,7 +218,28 @@ export class SessionManager {
     } catch {
       columns = undefined; // browse with SELECT * when structure cannot be read
     }
-    return runBrowse(l.conn, req, columns);
+    const result = await runBrowse(l.conn, req, columns);
+    if (!result.hasMore && (req.offset === 0 || result.rows.length > 0)) {
+      return { ...result, totalRows: String(req.offset + result.rows.length) };
+    }
+
+    const source = l.conn.dialect.buildBrowseAll({ object: req.object, filters: req.filters }, columns);
+    if (source.errors.length) return result;
+    const count = l.conn.driver === 'mssql' ? 'COUNT_BIG(*)' : 'COUNT(*)';
+    const cursor = l.conn.openCursor({
+      sql: `SELECT ${count} AS total_rows FROM (${source.sql}) AS earthql_count`,
+      params: source.params,
+    }, ctxForObject(req.object));
+    try {
+      const chunk = await cursor.fetch(1);
+      const value = String(chunk.rows[0]?.[0] ?? '');
+      return /^\d+$/.test(value) ? { ...result, totalRows: value } : result;
+    } catch {
+      // A failed count should not prevent browsing the page.
+      return result;
+    } finally {
+      await cursor.close().catch(() => undefined);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -304,6 +329,25 @@ export class SessionManager {
     const { conn } = this.get(profileId);
     const structure = await this.structure(profileId, object, true);
     return runGridUpdates(conn, structure, rows);
+  }
+
+  async deleteRows(profileId: string, object: ObjectPath, rows: GridRowDelete[]) {
+    const { conn } = this.get(profileId);
+    const structure = await this.structure(profileId, object, true);
+    return runGridDeletes(conn, structure, rows);
+  }
+
+  /** Text form of INSERT statements for the given already-loaded rows, for "Copy as INSERT Statement". */
+  async rowsAsInsert(profileId: string, object: ObjectPath, columns: ResultColumn[], rows: Cell[][]): Promise<string> {
+    const { conn } = this.get(profileId);
+    let metadata: (TableStructure['columns'][number] | undefined)[] = columns.map(() => undefined);
+    try {
+      const structure = await this.structure(profileId, object);
+      if (structure.columnsStatus.state === 'ok') metadata = columns.map((column) => structure.columns.find((info) => info.name === column.name));
+    } catch {
+      // Fall back to no column metadata (plain literal quoting by result type) when structure is unavailable.
+    }
+    return insertStatementText(object, columns, rows, metadata, conn.dialect);
   }
 
   previewCreate(profileId: string, spec: CreateTableSpec) {

@@ -3,11 +3,11 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo, type GridRowUpdate, type ObjectPath, type SecretField, type Secrets } from '@earthql/core';
+import { isEarthQLError, secretFieldsFor, type Cell, type ConnectionProfile, type ErrorInfo, type GridRowDelete, type GridRowUpdate, type ObjectPath, type ResultColumn, type SecretField, type Secrets } from '@earthql/core';
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
 import { SessionManager } from './sessions';
-import { executeTableAction } from './table-actions';
+import { executeTableAction, saveStructure } from './table-actions';
 import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob } from './table-files';
 import { exportConnections, importConnections } from './connection-transfer';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
@@ -36,6 +36,19 @@ export function registerIpc(sessions: SessionManager): void {
   handle('profiles:list', null, () => loadProfiles().map(summary));
   handle('profiles:importTablePlus', null, importConnections);
   handle('profiles:exportTablePlus', null, exportConnections);
+
+  handle('profiles:setDefaultDatabase', null, (id: string, database: string) => {
+    const profiles = loadProfiles();
+    const index = profiles.findIndex((profile) => profile.id === id);
+    const profile = profiles[index];
+    if (!profile || profile.driver === 'databricks' || typeof database !== 'string' || !database.trim() || database.includes(String.fromCharCode(0))) {
+      throw new Error('Choose a valid default database for this connection.');
+    }
+    const saved = { ...profile, database, updatedAt: Date.now() };
+    profiles[index] = saved;
+    saveProfiles(profiles);
+    return summary(saved);
+  });
 
   handle('profiles:save', null, (profile: ConnectionProfile, secrets: Secrets) => {
     const list = loadProfiles();
@@ -104,11 +117,13 @@ export function registerIpc(sessions: SessionManager): void {
     await fs.writeFile(res.filePath, sql, 'utf8');
     return { status: 'ok' as const, path: res.filePath };
   });
+  handle('query:rowsAsInsert', 0, (profileId: string, object: ObjectPath, columns: ResultColumn[], rows: Cell[][]) => sessions.rowsAsInsert(profileId, object, columns, rows));
 
   // --- writes -----------------------------------------------------------------
   handle('write:previewInsert', 0, (profileId: string, spec) => sessions.previewInsert(profileId, spec as any));
   handle('write:insert', 0, (profileId: string, spec) => sessions.insert(profileId, spec as any));
   handle('write:updateCells', 0, (profileId: string, object: ObjectPath, rows: GridRowUpdate[]) => sessions.updateCells(profileId, object, rows));
+  handle('write:deleteRows', 0, (profileId: string, object: ObjectPath, rows: GridRowDelete[]) => sessions.deleteRows(profileId, object, rows));
   handle('write:previewCreate', 0, (profileId: string, spec) => sessions.previewCreate(profileId, spec as any));
   handle('write:create', 0, (profileId: string, spec) => sessions.create(profileId, spec as any));
 
@@ -133,6 +148,7 @@ export function registerIpc(sessions: SessionManager): void {
     writeSaved(profileId, loadSaved(profileId).filter((x) => x.id !== id));
   });
 
+  handle('tableActions:saveStructure', 0, (profileId: string, object: ObjectPath, edits: import('../shared/table-actions').StructureEdit[]) => saveStructure(sessions, profileId, object, edits));
   handle('tableActions:run', 0, (profileId: string, request) => executeTableAction(sessions, profileId, request as any));
   handle('tableFiles:export', 1, (id: string, profileId: string, items, options) => exportTables(sessions, id, profileId, items as any, options as any));
   handle('tableFiles:read', 0, (profileId: string, object, format, options) => readTableImport(sessions, profileId, object as any, format as any, options as any));

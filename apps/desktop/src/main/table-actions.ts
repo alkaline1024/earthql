@@ -1,5 +1,5 @@
 import { ctxForObject, makeError, runWrite, type Dialect, type TableStructure, type WriteResult } from '@earthql/core';
-import { tableActionOptions, type TableActionRequest } from '../shared/table-actions';
+import { tableActionOptions, type StructureEdit, type TableActionRequest } from '../shared/table-actions';
 import type { SessionManager } from './sessions';
 
 export function buildTableAction(dialect: Dialect, structure: TableStructure, request: TableActionRequest): { statements: string[]; cleanupSql?: string } {
@@ -58,4 +58,81 @@ export async function executeTableAction(sessions: SessionManager, profileId: st
     const uncertain = ['network', 'timeout', 'outcome_unknown'].includes(info.category);
     return { status: uncertain ? 'outcome_unknown' : 'error', error: uncertain ? { ...info, category: 'outcome_unknown', hint: 'Refresh the table/schema to check the result before retrying.' } : info, durationMs: Date.now() - started };
   }
+}
+
+export async function saveStructure(sessions: SessionManager, profileId: string, object: TableActionRequest['object'], edits: StructureEdit[]) {
+  const { conn } = sessions.get(profileId);
+  const dialect = conn.dialect;
+  if (!conn.executeTableStatements || (conn.driver !== 'postgres' && conn.driver !== 'mysql')) throw makeError('unsupported', 'Structure editing is unavailable for this driver.');
+  const structure = await sessions.structure(profileId, object, true);
+  if (structure.kind !== 'table' || structure.columnsStatus.state !== 'ok') throw makeError('unsupported', 'Writable table metadata is required.');
+  const names = new Set(structure.columns.map((column) => column.name));
+  const quote = (name: string) => {
+    if (typeof name !== 'string' || !name.trim() || name.includes(String.fromCharCode(0))) throw makeError('config', 'Enter a valid column name.');
+    return dialect.quoteIdent(name);
+  };
+  const target = dialect.qualify(object);
+  const postgres = conn.driver === 'postgres';
+  const alter = (clause: string) => `ALTER TABLE ${target} ${clause}`;
+  const indexPath = (name: string) => [object.schema ?? 'public', name].map(quote).join('.');
+  const statements: string[] = [];
+  const checkedType = (type: string) => {
+    const dataType = type.trim();
+    const baseType = dataType.replace(/\(\s*\d+(?:\s*,\s*\d+)?\s*\)$/, '').trimEnd();
+    if (!dialect.validateTypeName(dataType) || !dialect.types.some((option) => option.name.toUpperCase() === baseType.toUpperCase())) {
+      throw makeError('config', 'Enter a supported data type for this connection.');
+    }
+    return dataType;
+  };
+  const compile = (edit: StructureEdit): string[] => {
+    if (edit.kind === 'addIndex' || edit.kind === 'addConstraint') {
+      const columns = edit.columns.split(',').map((name) => name.trim());
+      if (columns.some((name) => !names.has(name))) throw makeError('config', 'Enter existing column names separated by commas.');
+      const list = columns.map(quote).join(', ');
+      if (edit.kind === 'addConstraint') return [`ADD CONSTRAINT ${quote(edit.name)} UNIQUE (${list})`];
+      if (!postgres) return [`ADD ${edit.unique ? 'UNIQUE ' : ''}INDEX ${quote(edit.name)} (${list})`];
+      statements.push(`CREATE ${edit.unique ? 'UNIQUE ' : ''}INDEX ${quote(edit.name)} ON ${target} (${list})`);
+      return [];
+    }
+    if (edit.kind === 'dropIndex' || edit.kind === 'renameIndex') {
+      if (!structure.indexes.some((index) => index.name === edit.name && !index.primary)) throw makeError('config', 'Choose a non-primary index.');
+      if (!postgres) return [edit.kind === 'dropIndex' ? `DROP INDEX ${quote(edit.name)}` : `RENAME INDEX ${quote(edit.name)} TO ${quote(edit.next)}`];
+      statements.push(edit.kind === 'dropIndex' ? `DROP INDEX ${indexPath(edit.name)}` : `ALTER INDEX ${indexPath(edit.name)} RENAME TO ${quote(edit.next)}`);
+      return [];
+    }
+    if (edit.kind === 'dropConstraint' || edit.kind === 'renameConstraint') {
+      const constraint = structure.constraints.find((item) => item.name === edit.name);
+      if (!constraint) throw makeError('config', 'The constraint no longer exists.');
+      if (postgres) return [edit.kind === 'dropConstraint' ? `DROP CONSTRAINT ${quote(edit.name)}` : `RENAME CONSTRAINT ${quote(edit.name)} TO ${quote(edit.next)}`];
+      if (edit.kind === 'renameConstraint') throw makeError('unsupported', 'MySQL does not support renaming this constraint.');
+      switch (constraint.type.toUpperCase()) {
+        case 'PRIMARY KEY': return ['DROP PRIMARY KEY'];
+        case 'FOREIGN KEY': return [`DROP FOREIGN KEY ${quote(edit.name)}`];
+        case 'UNIQUE': return [`DROP INDEX ${quote(edit.name)}`];
+        case 'CHECK': return [`DROP CHECK ${quote(edit.name)}`];
+        default: throw makeError('unsupported', 'This constraint type cannot be dropped here.');
+      }
+    }
+    if (edit.kind === 'columnType') {
+      if (!postgres || !names.has(edit.column)) throw makeError('unsupported', 'Changing this column type is unavailable.');
+      return [`ALTER COLUMN ${quote(edit.column)} TYPE ${checkedType(edit.type)}`];
+    }
+    if (edit.kind !== 'add' && edit.kind !== 'drop' && edit.kind !== 'rename') throw makeError('config', 'Invalid structure edit.');
+
+    if (edit.kind !== 'add' && !names.delete(edit.column)) throw makeError('config', 'A column changed. Refresh the structure before saving.');
+    if (edit.kind === 'drop') return [`DROP COLUMN ${quote(edit.column)}`];
+    if (edit.kind !== 'rename' && edit.kind !== 'add') throw makeError('config', 'Invalid structure edit.');
+    if (names.has(edit.name)) throw makeError('config', `Column already exists: ${edit.name}`);
+    names.add(edit.name);
+    if (edit.kind === 'rename') return [`RENAME COLUMN ${quote(edit.column)} TO ${quote(edit.name)}`];
+    return [`ADD COLUMN ${quote(edit.name)} ${checkedType(edit.type)}`];
+  };
+  if (postgres) {
+    for (const edit of edits) statements.push(...compile(edit).map(alter));
+  } else {
+    const clauses = edits.flatMap(compile);
+    if (clauses.length) statements.push(alter(clauses.join(', ')));
+  }
+  if (!statements.length) return;
+  await conn.executeTableStatements(object, statements, { disableForeignKeys: false });
 }

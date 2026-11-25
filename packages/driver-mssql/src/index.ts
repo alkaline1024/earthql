@@ -98,6 +98,9 @@ export class MssqlDialect extends Dialect {
   ilike(textExpr: string, placeholder: string): string {
     return `${textExpr} LIKE ${placeholder}`;
   }
+  likeCaseSensitive(textExpr: string, placeholder: string): string {
+    return `${textExpr} COLLATE Latin1_General_CS_AS LIKE ${placeholder}`;
+  }
   escapeLike(value: string): string {
     return value.replace(/[\\%_[]/g, (m) => '\\' + m);
   }
@@ -491,7 +494,7 @@ class MssqlConnection implements DriverConnection {
         db,
       );
       const fks = await this.q<any>(
-        `SELECT fk.name, pc.name AS col, OBJECT_SCHEMA_NAME(fk.referenced_object_id) + '.' + OBJECT_NAME(fk.referenced_object_id) AS ref, rc.name AS rcol
+        `SELECT fk.name, pc.name AS col, OBJECT_SCHEMA_NAME(fk.referenced_object_id) + '.' + OBJECT_NAME(fk.referenced_object_id) AS ref, OBJECT_SCHEMA_NAME(fk.referenced_object_id) AS rschema, OBJECT_NAME(fk.referenced_object_id) AS rtable, rc.name AS rcol
          FROM sys.foreign_keys fk
          JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
          JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id AND pc.column_id = fkc.parent_column_id
@@ -512,6 +515,10 @@ class MssqlConnection implements DriverConnection {
         let c = map.get(r.name);
         if (!c) map.set(r.name, (c = { name: r.name, type: 'FOREIGN KEY', columns: [], references: r.ref }));
         c.columns.push(r.col);
+        if (r.rschema && r.rtable && r.rcol) {
+          c.foreignTarget ??= { object: { database: db, schema: r.rschema, name: r.rtable }, columns: [] };
+          c.foreignTarget.columns.push(r.rcol);
+        }
       }
       for (const r of checks) map.set(r.name, { name: r.name, type: 'CHECK', columns: [], definition: `CHECK ${r.definition}` });
       constraints = [...map.values()];

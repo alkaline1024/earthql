@@ -1,7 +1,7 @@
 import type { Dialect } from './dialect';
 import type { DriverConnection, StatementInput } from './driver';
 import { makeError } from './errors';
-import type { ColumnInfo, GridRowUpdate, SqlParam, TableStructure, WriteResult } from './types';
+import type { ColumnInfo, GridRowDelete, GridRowUpdate, SqlParam, TableStructure, WriteResult } from './types';
 
 export const MAX_GRID_UPDATE_ROWS = 1000;
 
@@ -94,6 +94,40 @@ export function buildGridUpdates(dialect: Dialect, structure: TableStructure, ro
   });
 }
 
+/**
+ * DELETE statements for existing rows, matched by primary key only (deleting is final — there is
+ * no "original value" to additionally compare, unlike an edited column in buildGridUpdates).
+ */
+export function buildGridDeletes(dialect: Dialect, structure: TableStructure, rows: GridRowDelete[]): StatementInput[] {
+  const key = gridPrimaryKey(structure);
+  if (!structure.gridUpdate || structure.kind !== 'table' || structure.columnsStatus.state !== 'ok' || !key) {
+    throw makeError('unsupported', 'Deleting rows requires a transactional table with an enforced primary key of supported types.');
+  }
+  if (!Array.isArray(rows) || rows.length === 0 || rows.length > MAX_GRID_UPDATE_ROWS) {
+    throw makeError('config', `Delete between 1 and ${MAX_GRID_UPDATE_ROWS} rows at a time.`);
+  }
+  const seen = new Set<string>();
+  return rows.map((row) => {
+    if (!Array.isArray(row?.key) || row.key.length !== key.length || !key.every((column, i) => row.key[i]?.column === column.name && typeof row.key[i].value === 'string')) {
+      throw makeError('config', 'The primary key no longer matches the table. Refresh the table and try again.');
+    }
+    const id = gridRowId(row.key);
+    if (seen.has(id)) throw makeError('config', 'The same row appears twice in the selection.');
+    seen.add(id);
+
+    const params: SqlParam[] = [];
+    function bind(value: string) {
+      return dialect.placeholder(params.push({ value }) - 1);
+    }
+    const where = key.map((column, i) => {
+      const value = row.key[i].value;
+      validateValue(column, value);
+      return dialect.gridUpdateMatch(column, bind(value), false);
+    });
+    return { sql: `DELETE FROM ${dialect.qualify(structure.object)} WHERE ${where.join(' AND ')}`, params };
+  });
+}
+
 export async function executeAtomicGridUpdates(statements: StatementInput[], transaction: {
   begin(): Promise<unknown>;
   update(statement: StatementInput): Promise<number | undefined>;
@@ -127,6 +161,19 @@ export async function runGridUpdates(conn: DriverConnection, structure: TableStr
   try {
     if (!conn.applyGridUpdates) throw makeError('unsupported', 'This driver does not support editing cells from the grid.');
     await conn.applyGridUpdates(structure.object, buildGridUpdates(conn.dialect, structure, rows));
+    return { status: 'ok', rowsAffected: rows.length, durationMs: Date.now() - started };
+  } catch (error) {
+    const info = conn.classifyError(error);
+    return { status: info.category === 'outcome_unknown' ? 'outcome_unknown' : 'error', error: info, durationMs: Date.now() - started };
+  }
+}
+
+/** Deletes existing rows by primary key, in the same all-or-nothing transaction as grid edits. */
+export async function runGridDeletes(conn: DriverConnection, structure: TableStructure, rows: GridRowDelete[]): Promise<WriteResult> {
+  const started = Date.now();
+  try {
+    if (!conn.applyGridUpdates) throw makeError('unsupported', 'This driver does not support deleting rows from the grid.');
+    await conn.applyGridUpdates(structure.object, buildGridDeletes(conn.dialect, structure, rows));
     return { status: 'ok', rowsAffected: rows.length, durationMs: Date.now() - started };
   } catch (error) {
     const info = conn.classifyError(error);

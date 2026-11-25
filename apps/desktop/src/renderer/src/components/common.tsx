@@ -31,10 +31,10 @@ export function DriverIcon({ driver, size = 18 }: { driver: DriverId; size?: num
   );
 }
 
-export function EnvBadge({ env, big }: { env: EnvironmentTag; big?: boolean }) {
+export function EnvBadge({ env, big, busy }: { env: EnvironmentTag; big?: boolean; busy?: boolean }) {
   if (!env?.name) return null;
   return (
-    <span className={`env${big ? ' big' : ''}`} style={{ '--env': env.color } as CSSProperties}>
+    <span className={`env${big ? ' big' : ''}`} aria-busy={busy} title={busy ? "Reconnecting" : undefined} style={{ '--env': env.color } as CSSProperties}>
       {env.name}
     </span>
   );

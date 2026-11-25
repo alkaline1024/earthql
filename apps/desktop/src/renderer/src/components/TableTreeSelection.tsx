@@ -1,21 +1,12 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { ObjectPath, TreeNode } from '@earthql/core';
 import type { TableAction } from '../../../shared/table-actions';
 import { useApp } from '../store';
 import { selectTreeNodes, treeNodeKey } from '../tree-selection';
 import { TableActionDialog } from './TableActionDialog';
 import { TableExportDialog } from './TableExportDialog';
+import { TableTreeSelectionContext as Context } from './table-tree-selection-context';
 
-interface SelectionContext {
-  selected: TreeNode[];
-  select(node: TreeNode, toggle?: boolean, range?: boolean): void;
-  visible(): TreeNode[];
-  focus(node: TreeNode): void;
-  action(action: TableAction, nodes: TreeNode[]): void;
-  export(nodes: TreeNode[]): void;
-}
-const Context = createContext<SelectionContext | null>(null);
-export function useTableTreeSelection() { return useContext(Context)!; }
 
 export function TableTreeSelection({ profileId, filter, children }: { profileId: string; filter: string; children: ReactNode }) {
   const [selected, setSelected] = useState<TreeNode[]>([]);
@@ -79,6 +70,6 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
       {children}
     </div>
     {action && <TableActionDialog profileId={profileId} object={action.nodes[0].path as ObjectPath} objects={action.nodes.map((node) => node.path as ObjectPath)} action={action.action} onClose={() => setAction(null)} />}
-    {exportNodes && <TableExportDialog profileId={profileId} object={exportNodes[0].path as ObjectPath} selectedObjects={exportNodes.map((node) => node.path as ObjectPath)} onClose={() => setExportNodes(null)} />}
+    {exportNodes && <TableExportDialog profileId={profileId} object={exportNodes[0].path as ObjectPath} selectedObjects={exportNodes.map((node) => node.path as ObjectPath)} views={exportNodes.filter((node) => node.kind === 'view').map((node) => node.path as ObjectPath)} onClose={() => setExportNodes(null)} />}
   </Context.Provider>;
 }

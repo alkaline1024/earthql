@@ -3,18 +3,19 @@ import { contextBridge, ipcRenderer } from 'electron';
 // Only these channels are reachable from the renderer.
 const INVOKE = new Set([
   'updates:status', 'updates:install',
-  'profiles:list', 'profiles:save', 'profiles:remove', 'profiles:test',
+  'keybindings:apply',
+  'profiles:list', 'profiles:setDefaultDatabase', 'profiles:save', 'profiles:remove', 'profiles:test',
   'profiles:importTablePlus', 'profiles:exportTablePlus',
   'connection:open', 'connection:close',
   'connection:openSeparate', 'connection:reconnect', 'connection:closeProfile',
   'meta:children', 'meta:structure', 'meta:privileges', 'meta:completion',
   'data:browse',
-  'query:run', 'query:cancel', 'query:more', 'query:closeCursor', 'query:saveFile',
+  'query:run', 'query:cancel', 'query:more', 'query:closeCursor', 'query:saveFile', 'query:rowsAsInsert',
   'write:previewInsert', 'write:insert', 'write:previewCreate', 'write:create',
-  'write:updateCells',
+  'write:updateCells', 'write:deleteRows',
   'history:list', 'history:clear', 'saved:list', 'saved:save', 'saved:remove',
   'export:run', 'export:cancel',
-  'tableActions:run',
+  'tableActions:run', 'tableActions:saveStructure',
   'tableFiles:export', 'tableFiles:read', 'tableFiles:import', 'tableFiles:release', 'tableFiles:cancel',
   'feedback:settings', 'feedback:saveSettings', 'feedback:capture', 'feedback:submit',
 ]);

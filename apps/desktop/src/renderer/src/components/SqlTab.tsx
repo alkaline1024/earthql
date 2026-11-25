@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom';
+import { QueryLibrary } from './QueryLibrary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isReadOnlyStatement,
@@ -10,10 +12,10 @@ import {
   type StatementResult,
   type TreeNode,
 } from '@earthql/core';
-import type { HistoryEntry, RunResponse, SavedQuery } from '../../../shared/api';
+import type { RunResponse } from '../../../shared/api';
 import { api, errorInfo, uid } from '../api';
 import { LIMITS, NO_LIMIT, noteError, profileOf, useApp } from '../store';
-import { formatSql } from '../sql-format';
+import { formatSql, uglifySql } from '../sql-format';
 import { ContextBar } from './ContextBar';
 import { ContextSubmenu } from './ContextSubmenu';
 import { DataGrid } from './DataGrid';
@@ -21,6 +23,7 @@ import { ExportDialog, type ExportOption } from './ExportDialog';
 import { SqlEditor, type SqlEditorHandle } from './SqlEditor';
 import { SplitButton, ToolbarDropdown } from './ToolbarMenu';
 import { ErrorView, Spinner, formatDuration, plural } from './common';
+import { Kbd, Keys, useShortcuts } from './Shortcut';
 
 const PHASE_TEXT: Record<QueryPhase, string> = {
   connecting: 'Connecting…',
@@ -40,12 +43,14 @@ interface RunState {
 }
 
 export function SqlTab({
+  tabId,
   profileId,
   initialSql,
   context,
   active,
   refreshVersion = 0,
 }: {
+  tabId: string;
   profileId: string;
   initialSql: string;
   context: ExecContext;
@@ -58,6 +63,8 @@ export function SqlTab({
   const sqlRunDefault = useApp((s) => s.sqlRunDefault);
   const setSqlRunDefault = useApp((s) => s.setSqlRunDefault);
   const beautifyUppercase = useApp((s) => s.beautifyUppercase);
+  const openSplit = useApp((s) => s.openSplit);
+  const sc = useShortcuts();
   const editor = useRef<SqlEditorHandle | null>(null);
   const [ctx, setCtx] = useState<ExecContext>(context);
   const [limit, setLimit] = useState(() => useApp.getState().defaultRowLimit);
@@ -67,7 +74,9 @@ export function SqlTab({
   const [results, setResults] = useState<StatementResult[]>([]);
   const [activeResult, setActiveResult] = useState(0);
   const [runError, setRunError] = useState<ErrorInfo | null>(null);
-  const [panel, setPanel] = useState<'none' | 'history' | 'saved'>('none');
+  const sidebarSection = useApp((s) => s.sidebarSection);
+  const sidebarProfileId = useApp((s) => s.activeProfileId);
+  const selectedTabId = useApp((s) => s.activeTabId);
   const [historyVersion, setHistoryVersion] = useState(0);
   const [exporting, setExporting] = useState<StatementResult | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -162,8 +171,9 @@ export function SqlTab({
 
   const saveQuery = useCallback(() => {
     setSaving({ name: '', id: savedId });
-    setPanel('saved');
-  }, [savedId]);
+    useApp.getState().setActiveProfile(profileId);
+    useApp.getState().setSidebarSection('queries');
+  }, [savedId, profileId]);
 
   const beautify = useCallback((scope: 'default' | 'selection' | 'all') => {
     if (!profile || !editor.current) return;
@@ -179,6 +189,17 @@ export function SqlTab({
       toast('error', `Could not format this SQL: ${errorInfo(e).message}`);
     }
   }, [profile, toast, beautifyUppercase]);
+
+  const uglify = useCallback((scope: 'default' | 'selection' | 'all') => {
+    if (!editor.current) return;
+    const range = scope !== 'all' ? editor.current.getSelectionRange() : null;
+    if (range) {
+      const selected = editor.current.getText().slice(range.from, range.to);
+      editor.current.replaceRange(range.from, range.to, uglifySql(selected));
+    } else {
+      editor.current.setText(uglifySql(editor.current.getText()));
+    }
+  }, []);
 
   const saveSqlFile = useCallback(async () => {
     const text = editor.current?.getText() ?? '';
@@ -202,9 +223,10 @@ export function SqlTab({
       if (cmd === 'cancel') void cancel();
       if (cmd === 'save') saveQuery();
       if (cmd === 'beautify') beautify('default');
+      if (cmd === 'uglify') uglify('default');
       if (cmd === 'save-sql-file') void saveSqlFile();
     });
-  }, [active, execute, cancel, saveQuery, beautify, saveSqlFile, sqlRunDefault]);
+  }, [active, execute, cancel, saveQuery, beautify, uglify, saveSqlFile, sqlRunDefault]);
 
   async function loadMore(r: StatementResult) {
     if (!r.cursorId) return;
@@ -231,40 +253,57 @@ export function SqlTab({
 
   return (
     <>
-      <ContextBar profileId={profileId} target={<ContextPicker profileId={profileId} ctx={ctx} onChange={setCtx} />} kindLabel="SQL">
-        <button className={`btn small${panel === 'history' ? ' primary' : ''}`} onClick={() => setPanel((p) => (p === 'history' ? 'none' : 'history'))}>
-          History
-        </button>
-        <button className={`btn small${panel === 'saved' ? ' primary' : ''}`} onClick={() => setPanel((p) => (p === 'saved' ? 'none' : 'saved'))}>
-          Saved
-        </button>
-      </ContextBar>
+      <ContextBar profileId={profileId} target={<ContextPicker profileId={profileId} ctx={ctx} onChange={setCtx} />} kindLabel="SQL"
+        connectionDisabled={!!run || loadingMore || !!exporting || !!saving}
+        onConnectionChange={(nextId) => {
+          const state = useApp.getState();
+          const connection = state.connections[nextId];
+          if (nextId === profileId || connection?.status !== 'connected') return;
+          const sql = editor.current?.getText() ?? initialSql;
+          useApp.setState({
+            tabs: state.tabs.map((tab) => tab.id === tabId && tab.kind === 'sql'
+              ? { ...tab, profileId: nextId, initialSql: sql, context: connection.defaultContext }
+              : tab),
+            ...(state.activeTabId === tabId ? { activeProfileId: nextId } : {}),
+          });
+        }} />
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         <div className="sql-split" ref={splitRef}>
           <div style={{ height: editorHeight ?? '40%', minHeight: 90, display: 'flex', flexDirection: 'column' }}>
-            <SqlEditor driver={profile.driver} initial={initialSql} schema={schema} handleRef={editor} />
+            <SqlEditor
+              driver={profile.driver}
+              initial={initialSql}
+              schema={schema}
+              handleRef={editor}
+              editorActions={{
+                onBeautify: () => beautify('default'),
+                onUglify: () => uglify('default'),
+                onSave: saveQuery,
+                onSplit: (side) => openSplit(tabId, side),
+              }}
+            />
           </div>
           <div className="toolbar" ref={toolbarRef}>
             {run ? (
-              <button className="btn small danger" onClick={() => void cancel()} disabled={run.cancel === 'requesting'} title="Cancel (⌘.)">
+              <button className="btn small danger" onClick={() => void cancel()} disabled={run.cancel === 'requesting'} title={sc.hint('Cancel', 'cancel')}>
                 ■ Cancel
               </button>
             ) : (
               <SplitButton
                 label={sqlRunDefault === 'all' ? '▶ Run All' : '▶ Run Current'}
-                title={sqlRunDefault === 'all' ? 'Run the whole query (⇧⌘↵)' : 'Run the selection, or the statement under the cursor (⌘↵)'}
+                title={sqlRunDefault === 'all' ? sc.hint('Run the whole query', 'run-all') : sc.hint('Run the selection, or the statement under the cursor', 'run')}
                 className="primary"
                 menuLabel="Run options"
                 onClick={() => void execute(sqlRunDefault)}
               >
                 {(close) => (
                   <>
-                    <button type="button" role="menuitem" onClick={() => { void execute('all'); close(); }}><span>Run All</span><kbd>⇧⌘↵</kbd></button>
-                    <button type="button" role="menuitem" onClick={() => { void execute('current'); close(); }}><span>Run Current</span><kbd>⌘↵</kbd></button>
+                    <button type="button" role="menuitem" onClick={() => { void execute('all'); close(); }}><span>Run All</span><Kbd id="run-all" /></button>
+                    <button type="button" role="menuitem" onClick={() => { void execute('current'); close(); }}><span>Run Current</span><Kbd id="run" /></button>
                     <div className="conn-menu-separator" role="separator" />
-                    <button type="button" role="menuitem" onClick={() => { saveQuery(); close(); }}>Add to Queries</button>
+                    <button type="button" role="menuitem" onClick={() => { saveQuery(); close(); }}><span>Add to Queries</span><Kbd id="save" /></button>
                     <div className="conn-menu-separator" role="separator" />
-                    <button type="button" role="menuitem" onClick={() => { void saveSqlFile(); close(); }}><span>Save SQL as…</span><kbd>⇧⌘S</kbd></button>
+                    <button type="button" role="menuitem" onClick={() => { void saveSqlFile(); close(); }}><span>Save SQL as…</span><Kbd id="save-sql-file" /></button>
                     <div className="conn-menu-separator" role="separator" />
                     <ContextSubmenu label="Default">
                       <button type="button" role="menuitemradio" aria-checked={sqlRunDefault === 'current'} className={`radio-item${sqlRunDefault === 'current' ? ' on' : ''}`} onClick={() => { setSqlRunDefault('current'); close(); }}>
@@ -295,11 +334,14 @@ export function SqlTab({
                 </>
               )}
             </ToolbarDropdown>
-            <SplitButton label="Beautify" title="Format SQL (⌘I)" menuLabel="Beautify options" disabled={!!run} onClick={() => beautify('default')}>
+            <SplitButton label="Beautify" title={sc.hint('Format SQL', 'beautify')} menuLabel="Beautify options" disabled={!!run} onClick={() => beautify('default')}>
               {(close) => (
                 <>
                   <button type="button" role="menuitem" onClick={() => { beautify('selection'); close(); }}>Format Selection</button>
                   <button type="button" role="menuitem" onClick={() => { beautify('all'); close(); }}>Format Entire Query</button>
+                  <div className="conn-menu-separator" role="separator" />
+                  <button type="button" role="menuitem" onClick={() => { uglify('selection'); close(); }}>Uglify Selection</button>
+                  <button type="button" role="menuitem" onClick={() => { uglify('all'); close(); }}><span>Uglify Entire Query</span><Kbd id="uglify" /></button>
                 </>
               )}
             </SplitButton>
@@ -338,7 +380,7 @@ export function SqlTab({
             {!runError && results.length === 0 && !run && (
               <div className="state">
                 <p>
-                  Run a query to see results here. <span className="kbd">⌘</span> <span className="kbd">↵</span> runs the selection, or {sqlRunDefault === 'all' ? 'the whole editor' : 'the statement under the cursor'}.
+                  Run a query to see results here. {sc.label('run') ? <><Keys keys={sc.label('run')} /> runs</> : 'Run executes'} the selection, or {sqlRunDefault === 'all' ? 'the whole editor' : 'the statement under the cursor'}.
                 </p>
                 {schema?.truncated && <p className="muted small">Autocomplete shows only part of this database (very many columns).</p>}
               </div>
@@ -368,14 +410,15 @@ export function SqlTab({
                 onLoadMore={() => void loadMore(current)}
                 loadingMore={loadingMore}
                 onExport={() => setExporting(current)}
+                onRefresh={() => void execute(sqlRunDefault)}
               />
             )}
           </div>
         </div>
-        {panel !== 'none' && (
-          <SidePanel
+        {active && selectedTabId === tabId && sidebarProfileId === profileId && sidebarSection !== 'items' && document.getElementById('sidebar-query-library') && createPortal(
+          <QueryLibrary
             profileId={profileId}
-            mode={panel}
+            mode={sidebarSection === 'history' ? 'history' : 'saved'}
             version={historyVersion + refreshVersion}
             saving={saving}
             onSavingChange={setSaving}
@@ -387,7 +430,8 @@ export function SqlTab({
               editor.current?.focus();
             }}
             onSaved={(q) => setSavedId(q.id)}
-          />
+          />,
+          document.getElementById('sidebar-query-library')!,
         )}
       </div>
       {exporting && (
@@ -461,12 +505,14 @@ function ResultView({
   onLoadMore,
   loadingMore,
   onExport,
+  onRefresh,
 }: {
   result: StatementResult;
   cancelOutcome?: RunResponse['cancel'];
   onLoadMore: () => void;
   loadingMore: boolean;
   onExport: () => void;
+  onRefresh: () => void;
 }) {
   if (result.status === 'skipped')
     return (
@@ -503,7 +549,7 @@ function ResultView({
   const rows = result.rows ?? [];
   return (
     <>
-      <DataGrid columns={result.columns} rows={rows} emptyText="The query returned no rows." />
+      <DataGrid columns={result.columns} rows={rows} emptyText="The query returned no rows." onRefresh={onRefresh} onExportPage={onExport} />
       <div className="statusbar">
         <span>{plural(rows.length, 'row')} loaded</span>
         {result.hasMore ? (
@@ -577,180 +623,5 @@ function ContextPicker({ profileId, ctx, onChange }: { profileId: string; ctx: E
         </>
       )}
     </span>
-  );
-}
-
-function SidePanel({
-  profileId,
-  mode,
-  version,
-  saving,
-  onSavingChange,
-  getText,
-  ctx,
-  onOpen,
-  onSaved,
-}: {
-  profileId: string;
-  mode: 'history' | 'saved';
-  version: number;
-  saving: { name: string; id?: string } | null;
-  onSavingChange: (s: { name: string; id?: string } | null) => void;
-  getText: () => string;
-  ctx: ExecContext;
-  onOpen: (sql: string, ctx?: ExecContext) => void;
-  onSaved: (q: SavedQuery) => void;
-}) {
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [saved, setSaved] = useState<SavedQuery[]>([]);
-  const [search, setSearch] = useState('');
-  const [confirmClear, setConfirmClear] = useState(false);
-  const newSqlTab = useApp((s) => s.newSqlTab);
-  const toast = useApp((s) => s.toast);
-
-  const reload = useCallback(() => {
-    api.history.list(profileId).then(setHistory).catch(() => setHistory([]));
-    api.saved.list(profileId).then(setSaved).catch(() => setSaved([]));
-  }, [profileId]);
-
-  useEffect(reload, [reload, version, mode]);
-
-  useEffect(() => {
-    if (saving && saving.id && !saving.name) {
-      const existing = saved.find((s) => s.id === saving.id);
-      if (existing) onSavingChange({ ...saving, name: existing.name });
-    }
-  }, [saving, saved, onSavingChange]);
-
-  const q = search.toLowerCase();
-  const hist = history.filter((h) => !q || h.sql.toLowerCase().includes(q));
-  const sav = saved.filter((s) => !q || s.name.toLowerCase().includes(q) || s.sql.toLowerCase().includes(q));
-
-  async function doSave(asNew: boolean) {
-    if (!saving?.name.trim()) return;
-    const sql = getText();
-    if (!sql.trim()) {
-      toast('error', 'The editor is empty.');
-      return;
-    }
-    const item = await api.saved.save(profileId, { id: asNew ? '' : (saving.id ?? ''), name: saving.name.trim(), sql, context: ctx });
-    onSaved(item);
-    onSavingChange(null);
-    reload();
-    toast('ok', `Saved “${item.name}”.`);
-  }
-
-  return (
-    <div className="side-panel">
-      <div className="toolbar" style={{ background: 'transparent' }}>
-        <b>{mode === 'history' ? 'Query history' : 'Saved queries'}</b>
-        <span className="spacer" />
-        {mode === 'history' &&
-          (confirmClear ? (
-            <>
-              <button className="btn small" onClick={() => setConfirmClear(false)}>
-                Keep
-              </button>
-              <button
-                className="btn small danger"
-                onClick={async () => {
-                  await api.history.clear(profileId);
-                  setConfirmClear(false);
-                  reload();
-                }}
-              >
-                Clear all
-              </button>
-            </>
-          ) : (
-            <button className="btn small" disabled={history.length === 0} onClick={() => setConfirmClear(true)}>
-              Clear…
-            </button>
-          ))}
-      </div>
-      <div style={{ padding: '6px 10px' }}>
-        <input className="input" style={{ width: '100%' }} placeholder="Search" value={search} onChange={(e) => setSearch(e.target.value)} />
-      </div>
-      {mode === 'saved' && saving && (
-        <div className="col" style={{ padding: '6px 10px 10px', borderBottom: '1px solid var(--line)' }}>
-          <input
-            className="input"
-            autoFocus
-            placeholder="Name for this query"
-            value={saving.name}
-            onChange={(e) => onSavingChange({ ...saving, name: e.target.value })}
-            onKeyDown={(e) => e.key === 'Enter' && void doSave(false)}
-          />
-          <div className="row">
-            <button className="btn small primary" disabled={!saving.name.trim()} onClick={() => void doSave(false)}>
-              {saving.id ? 'Update' : 'Save'}
-            </button>
-            {saving.id && (
-              <button className="btn small" disabled={!saving.name.trim()} onClick={() => void doSave(true)}>
-                Save as new
-              </button>
-            )}
-            <button className="btn small ghost" onClick={() => onSavingChange(null)}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-      <div className="scroll grow">
-        {mode === 'history' &&
-          (hist.length === 0 ? (
-            <div className="tree-msg" style={{ padding: 12 }}>{history.length ? 'No matches.' : 'Queries you run on this connection appear here. History is stored only on this Mac.'}</div>
-          ) : (
-            hist.map((h) => (
-              <div key={h.id} className="hist-item" onDoubleClick={() => onOpen(h.sql, h.context)}>
-                <div className="h-sql">{h.sql}</div>
-                <div className="h-meta">
-                  <StatusDot status={h.status === 'cancelled' ? 'cancelled' : h.status === 'ok' ? 'ok' : h.status === 'outcome_unknown' ? 'outcome_unknown' : 'error'} />
-                  <span>{new Date(h.ranAt).toLocaleString()}</span>
-                  <span>· {formatDuration(h.durationMs)}</span>
-                  <span className="spacer" />
-                  <button className="btn small ghost" onClick={() => onOpen(h.sql, h.context)}>
-                    Open
-                  </button>
-                  <button className="btn small ghost" onClick={() => newSqlTab(profileId, h.sql, h.context)}>
-                    New tab
-                  </button>
-                </div>
-              </div>
-            ))
-          ))}
-        {mode === 'saved' &&
-          (sav.length === 0 ? (
-            <div className="tree-msg" style={{ padding: 12 }}>{saved.length ? 'No matches.' : 'Save queries you use often with “Add to Queries” (⌘S). They are kept per connection on this Mac.'}</div>
-          ) : (
-            sav.map((s) => (
-              <div key={s.id} className="hist-item" onDoubleClick={() => onOpen(s.sql, s.context)}>
-                <div style={{ fontWeight: 600, marginBottom: 2 }}>{s.name}</div>
-                <div className="h-sql">{s.sql}</div>
-                <div className="h-meta">
-                  <span>{new Date(s.updatedAt).toLocaleDateString()}</span>
-                  <span className="spacer" />
-                  <button className="btn small ghost" onClick={() => (onOpen(s.sql, s.context), onSaved(s))}>
-                    Open
-                  </button>
-                  <button className="btn small ghost" onClick={() => newSqlTab(profileId, s.sql, s.context, s.name)}>
-                    New tab
-                  </button>
-                  <button
-                    className="btn small ghost"
-                    style={{ color: 'var(--danger)' }}
-                    onClick={async () => {
-                      await api.saved.remove(profileId, s.id);
-                      reload();
-                    }}
-                  >
-                    Delete
-                  </button>
-                </div>
-              </div>
-            ))
-          ))}
-      </div>
-    </div>
   );
 }
