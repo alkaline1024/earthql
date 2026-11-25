@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ErrorInfo, ObjectPath, TreeNode } from '@earthql/core';
 import { api, errorInfo } from '../api';
-import { containerKey, noteError, profileOf, useApp } from '../store';
+import { containerKey, noteError, useApp } from '../store';
 import { DriverIcon, EnvBadge, Spinner, categoryTitle } from './common';
 
 const ICON: Record<TreeNode['kind'], string> = {
@@ -24,11 +24,15 @@ export function Sidebar() {
   const profiles = useApp((s) => s.profiles);
   const conn = activeProfileId ? connections[activeProfileId] : undefined;
   const summary = activeProfileId ? profiles.find((p) => p.profile.id === activeProfileId) : undefined;
-  const openIds = Object.keys(connections);
+  const openProfiles = Object.keys(connections).flatMap((id) => {
+    const profile = profiles.find((p) => p.profile.id === id)?.profile;
+    return profile ? [profile] : [];
+  });
+  const showSwitcher = openProfiles.length > 1;
   const [filter, setFilter] = useState('');
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${showSwitcher ? ' sidebar-with-switcher' : ''}`}>
       <div className="sidebar-top drag">
         <span className="spacer" />
         <button className="btn small ghost no-drag" title="Connections" onClick={() => setScreen('connections')}>
@@ -36,57 +40,72 @@ export function Sidebar() {
         </button>
       </div>
 
-      {openIds.length > 1 && (
-        <div style={{ padding: '0 10px 6px' }}>
-          <select className="select" style={{ width: '100%' }} value={activeProfileId ?? ''} onChange={(e) => setActiveProfile(e.target.value)}>
-            {openIds.map((id) => (
-              <option key={id} value={id}>
-                {profileOf(id)?.profile.name ?? id}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+      <div className="sidebar-body">
+        {showSwitcher && (
+          <nav className="connection-switcher" aria-label="Open connections">
+            {openProfiles.map((profile) => {
+              const name = profile.name || 'Unnamed connection';
+              const lost = connections[profile.id].status === 'lost';
+              return (
+                <button
+                  key={profile.id}
+                  className="connection-switcher-item"
+                  type="button"
+                  aria-pressed={profile.id === activeProfileId}
+                  title={lost ? `${name} (connection lost)` : name}
+                  onClick={() => setActiveProfile(profile.id)}
+                >
+                  <span aria-hidden="true"><DriverIcon driver={profile.driver} size={22} /></span>
+                  <span className="connection-switcher-name">{name}</span>
+                  {lost && <span className="connection-switcher-status">Connection lost</span>}
+                </button>
+              );
+            })}
+          </nav>
+        )}
 
-      {summary && conn && (
-        <>
-          <div className="row" style={{ padding: '2px 12px 6px' }}>
-            <DriverIcon driver={summary.profile.driver} size={20} />
-            <div className="grow" style={{ minWidth: 0 }}>
-              <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.profile.name}</div>
-              <EnvBadge env={summary.profile.env} />
-            </div>
-            <button className="btn icon ghost" title="New SQL editor (⌘T)" onClick={() => newSqlTab(summary.profile.id)}>
-              ⌨︎
-            </button>
-            <button className="btn icon ghost" title="Disconnect" onClick={() => void disconnect(summary.profile.id)}>
-              ⏏︎
-            </button>
-          </div>
-          {conn.status === 'lost' && (
-            <div className="banner" style={{ margin: '0 8px 6px', borderRadius: 6 }}>
-              <span className="grow">Connection lost.</span>
-              <button className="btn small" onClick={() => void connect(summary.profile.id)}>
-                Reconnect
+        <div className="sidebar-browser">
+          {summary && conn && (
+            <>
+              <div className="row" style={{ padding: '2px 12px 6px' }}>
+                <DriverIcon driver={summary.profile.driver} size={20} />
+                <div className="grow" style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{summary.profile.name}</div>
+                  <EnvBadge env={summary.profile.env} />
+                </div>
+                <button className="btn icon ghost" title="New SQL editor (⌘T)" onClick={() => newSqlTab(summary.profile.id)}>
+                  ⌨︎
+                </button>
+                <button className="btn icon ghost" title="Disconnect" onClick={() => void disconnect(summary.profile.id)}>
+                  ⏏︎
+                </button>
+              </div>
+              {conn.status === 'lost' && (
+                <div className="banner" style={{ margin: '0 8px 6px', borderRadius: 6 }}>
+                  <span className="grow">Connection lost.</span>
+                  <button className="btn small" onClick={() => void connect(summary.profile.id)}>
+                    Reconnect
+                  </button>
+                </div>
+              )}
+              <div style={{ padding: '0 10px 6px' }}>
+                <input className="input" style={{ width: '100%' }} placeholder="Filter loaded objects" value={filter} onChange={(e) => setFilter(e.target.value)} />
+              </div>
+              <div className="tree">
+                <TreeChildren key={summary.profile.id} profileId={summary.profile.id} parent={null} depth={0} filter={filter.toLowerCase()} />
+              </div>
+            </>
+          )}
+          {!conn && (
+            <div className="state">
+              <p>No open connection.</p>
+              <button className="btn" onClick={() => setScreen('connections')}>
+                Open connections
               </button>
             </div>
           )}
-          <div style={{ padding: '0 10px 6px' }}>
-            <input className="input" style={{ width: '100%' }} placeholder="Filter loaded objects" value={filter} onChange={(e) => setFilter(e.target.value)} />
-          </div>
-          <div className="tree">
-            <TreeChildren key={summary.profile.id} profileId={summary.profile.id} parent={null} depth={0} filter={filter.toLowerCase()} />
-          </div>
-        </>
-      )}
-      {!conn && (
-        <div className="state">
-          <p>No open connection.</p>
-          <button className="btn" onClick={() => setScreen('connections')}>
-            Open connections
-          </button>
         </div>
-      )}
+      </div>
     </aside>
   );
 }
