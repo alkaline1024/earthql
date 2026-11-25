@@ -1,5 +1,11 @@
 # EarthQL — project notes for Claude
 
+## Git workflow
+
+When the user says "commit" or "push" (in Thai or English), commit (and push) directly to `main` — do not create
+or switch to a new branch first. This overrides the general default of branching away from the default branch
+before committing.
+
 ## UI text: keyboard shortcuts use symbols, never spelled-out words
 
 Anywhere the UI shows a keyboard shortcut to the user (tooltips, `data-tooltip`, `title`, `<kbd>`, menu items,
