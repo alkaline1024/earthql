@@ -165,6 +165,7 @@ export async function runBrowse(
       offset: req.offset,
       hasMore: chunk.rows.length > req.pageSize,
       sql: stmt.sql,
+      params: stmt.params,
       durationMs: Date.now() - started,
     };
   } finally {

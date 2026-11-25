@@ -1,10 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { DRIVER_LABELS, type ErrorInfo, type ObjectPath, type TreeNode } from '@earthql/core';
 import { api, errorInfo } from '../api';
-import { connectionName, containerKey, noteError, pinnedTableKey, useApp, type Theme } from '../store';
-import { TableTreeSelection } from './TableTreeSelection';
+import { connectionName, containerKey, noteError, orderedConnectionIds, pinnedTableKey, useApp, type Theme } from '../store';
+import { TableGroupMenu, TableTreeContextMenu, TableTreeSelection } from './TableTreeSelection';
 import { useTableTreeSelection } from './table-tree-selection-context';
 import { treeNodeKey } from '../tree-selection';
+import { tableGroupContainer, type TableGroup } from '../table-groups';
 import type { TableAction } from '../../../shared/table-actions';
 import { TableImportDialog } from './TableImportDialog';
 import { ContextSubmenu } from './ContextSubmenu';
@@ -34,13 +35,19 @@ export function Sidebar() {
   const { activeProfileId, connections, setActiveProfile, setScreen, newSqlTab, disconnect, connect } = useApp();
   const connecting = useApp((s) => s.connecting);
   const profiles = useApp((s) => s.profiles);
+  const connectionOrder = useApp((s) => s.sidebarConnectionOrder);
+  const moveConnection = useApp((s) => s.moveConnection);
   const conn = activeProfileId ? connections[activeProfileId] : undefined;
   const summary = profiles.find((p) => p.profile.id === conn?.profileId);
-  const openConnections = Object.entries(connections).flatMap(([id, connection]) => {
+  const openConnections = orderedConnectionIds(connections, connectionOrder).flatMap((id) => {
+    const connection = connections[id];
     const profile = profiles.find((p) => p.profile.id === connection.profileId)?.profile;
     return profile ? [{ id, profile, connection }] : [];
   });
   const showSwitcher = openConnections.length > 1;
+  const connectionListRef = useRef<HTMLElement>(null);
+  const [draggingConnection, setDraggingConnection] = useState<string | null>(null);
+  const [connectionDrop, setConnectionDrop] = useState<{ id: string; after: boolean } | null>(null);
   const [filter, setFilter] = useState('');
   const [split, setSplit] = useState<{ sessionId: string; name?: string } | null>(null);
   const [connectionMenu, setConnectionMenu] = useState<{ sessionId: string; x: number; y: number; trigger: HTMLElement; alignRight: boolean; details?: boolean } | null>(null);
@@ -112,21 +119,61 @@ export function Sidebar() {
 
       <div className="sidebar-body">
         {showSwitcher && (
-          <nav className="connection-switcher" aria-label="Open connections">
+          <nav className="connection-switcher" aria-label="Open connections" ref={connectionListRef}
+            onDragOver={(event) => {
+              if (!draggingConnection) return;
+              event.preventDefault();
+              event.dataTransfer.dropEffect = 'move';
+              const list = connectionListRef.current;
+              if (!list) return;
+              const bounds = list.getBoundingClientRect();
+              if (event.clientY < bounds.top + 36) list.scrollTop -= 18;
+              else if (event.clientY > bounds.bottom - 36) list.scrollTop += 18;
+            }}>
             {openConnections.map(({ id, profile, connection }) => {
               const name = connectionName(id);
               const lost = connection.status === 'lost';
               return (
                 <button
                   key={id}
-                  className="connection-switcher-item"
+                  className={`connection-switcher-item${draggingConnection === id ? ' dragging' : ''}${connectionDrop?.id === id ? (connectionDrop.after ? ' drop-after' : ' drop-before') : ''}`}
                   style={{ '--env': profile.env.color || 'var(--accent)' } as CSSProperties}
                   type="button"
+                  draggable
                   aria-label={name}
                   aria-pressed={id === activeProfileId}
                   aria-busy={!!connecting[id]}
                   aria-haspopup="menu"
-                  title={lost ? `${name} (connection lost)` : name}
+                  title={`${lost ? `${name} (connection lost)` : name} — Drag to reorder connections`}
+                  onDragStart={(event) => {
+                    event.dataTransfer.effectAllowed = 'move';
+                    event.dataTransfer.setData('text/plain', id);
+                    setConnectionMenu(null);
+                    setDraggingConnection(id);
+                  }}
+                  onDragOver={(event) => {
+                    if (!draggingConnection) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = 'move';
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    setConnectionDrop(draggingConnection === id ? null : { id, after: event.clientY > bounds.top + bounds.height / 2 });
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setConnectionDrop(null);
+                  }}
+                  onDrop={(event) => {
+                    if (!draggingConnection) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    moveConnection(draggingConnection, id, event.clientY > bounds.top + bounds.height / 2);
+                    setDraggingConnection(null);
+                    setConnectionDrop(null);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingConnection(null);
+                    setConnectionDrop(null);
+                  }}
                   onClick={() => setActiveProfile(id)}
                   onContextMenu={(event) => openConnectionMenu(event, id)}
                 >
@@ -348,6 +395,7 @@ const treeCache = new WeakMap<object, Map<string, {
 }>>();
 
 function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profileId: string; parent: TreeNode | null; depth: number; filter: string; onSeparate?: (name: string) => void }) {
+  const selection = useTableTreeSelection();
   const key = containerKey(profileId, parent ? nodePathAsContainer(parent) : {});
   const refresh = useApp((s) => s.treeRefresh[key] ?? 0);
   const connection = useApp((s) => s.connections[profileId]);
@@ -435,11 +483,19 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
   const ordered = pinnedTables.length
     ? [...shown].sort((a, b) => Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, a))) - Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, b))))
     : shown;
+  const containers = new Set(nodes.filter((node) => !node.hasChildren).map((node) => tableGroupContainer(node.path)));
+  const groups = selection.groups.filter((group) => containers.has(group.container)
+    && (!filter || ordered.some((node) => group.nodeKeys.includes(treeNodeKey(node)))));
+  const grouped = new Set(groups.flatMap((group) => group.nodeKeys));
   return (
     <>
-      {ordered.map((n) => (
+      {ordered.filter((node) => node.hasChildren || !grouped.has(treeNodeKey(node))).map((n) => (
         <TreeItem key={n.kind + n.name} profileId={profileId} node={n} depth={depth} filter={filter} onSeparate={onSeparate} />
       ))}
+      {groups.map((group) => <TableGroupBranch key={group.id} group={group} depth={depth} filter={filter}>
+        {ordered.filter((node) => !node.hasChildren && group.nodeKeys.includes(treeNodeKey(node))).map((node) =>
+          <TreeItem key={treeNodeKey(node)} profileId={profileId} node={node} depth={depth + 1} filter={filter} onSeparate={onSeparate} />)}
+      </TableGroupBranch>)}
       {hasOtherDatabases && (
         <button type="button" className="btn small ghost" style={{ margin: '6px 10px' }}
           aria-expanded={showOtherDatabases} onClick={() => setShowOtherDatabases((show) => !show)}>
@@ -448,6 +504,32 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
       )}
     </>
   );
+}
+
+export function TableGroupBranch({ group, depth, filter, children }: {
+  group: TableGroup; depth: number; filter: string; children: ReactNode;
+}) {
+  const selection = useTableTreeSelection();
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const expanded = !group.collapsed || !!filter;
+  return <div role="treeitem" aria-level={depth + 1} aria-expanded={expanded} aria-label={group.name}>
+    <div className="sidebar-table-group-row" style={{ paddingLeft: 6 + depth * 14, color: group.color }}
+      onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); }}>
+      <button type="button" ref={toggle} className="sidebar-table-group-toggle" aria-expanded={expanded}
+        onClick={() => selection.collapseGroups(expanded, group.id)}>
+        <span className={`chev${expanded ? ' open' : ''}`} aria-hidden="true">▶</span>
+        <span className="sidebar-table-group-dot" style={{ background: group.color }} />
+        <span className="name">{group.name}</span>
+      </button>
+      <button type="button" className="sidebar-table-group-edit" title="Edit Group"
+        aria-label={`Edit group ${group.name}`} onClick={() => selection.editGroup(group)}>…</button>
+    </div>
+    {expanded && <div role="group">{children}</div>}
+    {menu && <TableTreeContextMenu position={menu} onClose={() => setMenu(null)} onEscape={() => toggle.current?.focus()}>
+      <TableGroupMenu group={group} onClose={() => setMenu(null)} />
+    </TableTreeContextMenu>}
+  </div>;
 }
 
 function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: string; node: TreeNode; depth: number; filter: string; onSeparate?: (name: string) => void }) {
@@ -462,14 +544,6 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
     : node.detail === 'default'));
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => {
-    if (!menu || !menuRef.current) return;
-    const element = menuRef.current;
-    element.style.left = `${Math.max(8, Math.min(menu.x, window.innerWidth - element.offsetWidth - 8))}px`;
-    element.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - element.offsetHeight - 8))}px`;
-    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
-  }, [menu]);
   const { openTab, newSqlTab, refreshTree, setTablePinned, activeTabId, tabs } = useApp();
   const conn = useApp((s) => s.connections[profileId]);
   const unsaved = useApp((s) => objectHasUnsavedChanges(s.tabs, s.gridDrafts, profileId, node.path, node.kind, s.unsavedStructureTabs));
@@ -526,13 +600,6 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
 
   const sqlContext = () => ({ catalog: container.catalog, database: container.database, schema: container.schema });
 
-  useEffect(() => {
-    if (!menu) return;
-    const close = () => setMenu(null);
-    window.addEventListener('mousedown', close);
-    return () => window.removeEventListener('mousedown', close);
-  }, [menu]);
-
   return (
     <>
       <div
@@ -575,30 +642,15 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
         {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
       </div>
       {menu && (
-        <div
-          className="conn-context-menu table-tree-context-menu"
-          ref={menuRef}
-          role="menu" aria-label="Table actions"
-          onKeyDown={(event) => {
-            tableShortcut(event);
-            if (event.key === 'Escape') { setMenu(null); rowRef.current?.focus(); }
-            if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-              event.preventDefault();
-              const root = (event.target as HTMLElement).closest('[role="menu"]') ?? event.currentTarget;
-              const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')).filter((button) => button.closest('[role="menu"]') === root);
-              const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
-              buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
-            }
-          }}
-          style={{ position: 'fixed', left: menu.x, top: menu.y, width: 220, zIndex: 60, padding: 4, borderRadius: 8 }}
-          onMouseDown={(e) => e.stopPropagation()}
-        >
+        <TableTreeContextMenu position={menu} width={node.hasChildren ? 220 : 270}
+          onClose={() => setMenu(null)} onEscape={() => rowRef.current?.focus()} onKeyDown={tableShortcut}>
           {!node.hasChildren && (
             <>
               <MenuItem label="Open data" onClick={() => (setMenu(null), openObject('data', selectedNodes))} />
               <MenuItem label="Open structure" onClick={() => (setMenu(null), openObject('structure', selectedNodes))} />
             </>
           )}
+          {!node.hasChildren && <TableGroupMenu nodes={selectedNodes} node={node} onClose={() => setMenu(null)} />}
           <MenuItem label="New SQL editor here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
           {!node.hasChildren && (
             <MenuItem
@@ -639,7 +691,7 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
             <button role="menuitem" disabled={!allTables} className="destructive table-action-menuitem" aria-keyshortcuts={sc.aria('table-delete')} onClick={() => beginAction('delete')}><span>{multiple ? `Delete ${selectedNodes.length} Tables…` : 'Delete…'}</span><Kbd id="table-delete" /></button>
           </>}
           {node.hasChildren && <MenuItem label="Refresh" onClick={() => (setMenu(null), refreshTree(profileId, container), setOpen(true))} />}
-        </div>
+        </TableTreeContextMenu>
       )}
       {importFormat && <TableImportDialog profileId={profileId} object={node.path as ObjectPath} format={importFormat} onClose={() => setImportFormat(null)} />}
       {open && node.hasChildren && <TreeChildren profileId={profileId} parent={node} depth={depth + 1} filter={filter} />}

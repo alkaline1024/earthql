@@ -1,18 +1,24 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   canEditGridColumn,
+  canEditGridInsertColumn,
   cellToText,
   checkRawCondition,
   describePath,
   gridPrimaryKey,
   gridRowId,
+  gridInputCell,
+  isGridDateTime,
   MAX_GRID_UPDATE_ROWS,
+  type BrowseRequest,
   type BrowseResult,
+  type BuiltStatement,
   type Cell,
   type ErrorInfo,
   type Filter,
   type FilterOp,
   type GridRowUpdate,
+  type InsertCell,
   type ObjectKind,
   type ObjectPath,
   type ObjectPrivileges,
@@ -22,12 +28,13 @@ import {
 } from '@earthql/core';
 import type { StructureEdit } from '../../../shared/table-actions';
 import type { TableImportFormat } from '../../../shared/api';
-import { api, errorInfo } from '../api';
+import { api, errorInfo, uid } from '../api';
+import type { GridRowsClipboard } from '../grid-clipboard';
+import { gridChangesForSave, gridDraftRowCount, insertCell, newGridRow, pastedGridRows, stageGridDeletes } from '../grid-inserts';
 import { noteError, profileOf, useApp } from '../store';
-import { DataGrid, type GridEditing, type TableGridActions } from './DataGrid';
+import { DataGrid, type GridChoice, type GridEditing, type TableGridActions } from './DataGrid';
 import { ContextBar } from './ContextBar';
 import { ErrorView, Modal, Spinner, StateView, formatDuration, plural } from './common';
-import { InsertDialog } from './InsertDialog';
 import { ExportDialog } from './ExportDialog';
 import { TableImportDialog } from './TableImportDialog';
 import { useShortcuts } from './Shortcut';
@@ -237,7 +244,6 @@ export function TableTab({
           editBlocked={privileges?.update === 'no' ? 'This account has no UPDATE privilege on this table.' : null}
           active={active}
           refreshVersion={refreshVersion}
-          onInserted={() => setDataVersion((v) => v + 1)}
         />
       ) : (
         <>
@@ -267,7 +273,6 @@ function DataView({
   editBlocked,
   active,
   refreshVersion,
-  onInserted,
 }: {
   initialFilters?: Filter[];
   tabId: string;
@@ -279,7 +284,6 @@ function DataView({
   editBlocked: string | null;
   active: boolean;
   refreshVersion: number;
-  onInserted: () => void;
 }) {
   const sc = useShortcuts();
   // Each row remembers a snapshot of what was last applied (`applied`); `filters` is the list of those
@@ -294,9 +298,12 @@ function DataView({
   const [result, setResult] = useState<BrowseResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<ErrorInfo | null>(null);
-  const [showInsert, setShowInsert] = useState(false);
-  const [insertSeed, setInsertSeed] = useState<Record<string, Cell>[] | undefined>(undefined);
+  const [focusCell, setFocusCell] = useState<{ row: number; column: number; version: number }>();
   const [showExport, setShowExport] = useState(false);
+  const [showSql, setShowSql] = useState(false);
+  const [sqlPreview, setSqlPreview] = useState<BuiltStatement | null>(null);
+  const [sqlError, setSqlError] = useState<ErrorInfo | null>(null);
+  const lastBrowse = useRef<BrowseRequest | null>(null);
   const [importFormat, setImportFormat] = useState<TableImportFormat | null>(null);
   const [gridEpoch, setGridEpoch] = useState(0);
   const draft = useApp((s) => s.gridDrafts[tabId]);
@@ -306,16 +313,17 @@ function DataView({
   const status = useApp((s) => s.connections[profileId]?.status);
   const editable = useMemo(() => editBlocked || !structure?.gridUpdate || status === 'lost' ? null : gridPrimaryKey(structure), [editBlocked, structure, status]);
   const rowKeys = useMemo(() => {
-    if (!result || !editable || structure?.kind !== 'table') return [];
-    const indexes = editable.map((column) => result.columns.findIndex((current) => current.name === column.name));
+    const identity = structure?.kind === 'table' ? gridPrimaryKey(structure) : null;
+    if (!result || !identity) return [];
+    const indexes = identity.map((column) => result.columns.findIndex((current) => current.name === column.name));
     if (indexes.some((index) => index < 0)) return [];
     return result.rows.map((row) => {
       const values = indexes.map((index) => row[index]);
       if (values.some((value) => value == null || typeof value === 'object')) return null;
-      return editable.map(({ name }, index) => ({ column: name, value: cellToText(values[index]) }));
+      return identity.map(({ name }, index) => ({ column: name, value: cellToText(values[index]) }));
     });
-  }, [result, editable, structure]);
-  const displayedRows = useMemo(() => result?.rows.map((row, index) => {
+  }, [result, structure]);
+  const displayedRows = useMemo(() => result ? [...result.rows.map((row, index) => {
     const key = rowKeys[index];
     const changes = key && draft?.rows[gridRowId(key)]?.changes;
     if (!changes) return row;
@@ -325,35 +333,84 @@ function DataView({
       if (column >= 0) copy[column] = change.value;
     }
     return copy;
-  }), [result, rowKeys, draft]);
+  }), ...(draft?.inserts ?? []).map(({ values }) => result.columns.map(({ name }): Cell => {
+    const cell = values[name];
+    return cell?.kind === 'value' ? cell.value : null;
+  }))] : [], [result, rowKeys, draft]);
 
-  const rowCount = Object.keys(draft?.rows ?? {}).length;
+  const rowCount = gridDraftRowCount(draft);
+  const deleteCount = Object.keys(draft?.deletes ?? {}).length;
+  const isDeletedRow = (row: number) => !!rowKeys[row] && !!draft?.deletes?.[gridRowId(rowKeys[row])];
   const saving = !!draft?.saving;
   const unknownOutcome = draft?.error?.category === 'outcome_unknown';
 
   const load = useCallback(async () => {
+    const request = { object, filters, sort, offset, pageSize };
+    lastBrowse.current = request;
+    setFocusCell(undefined);
+    setShowSql(false);
+    setSqlPreview(null);
+    setSqlError(null);
     setLoading(true);
     setError(null);
     try {
-      setResult(await api.data.browse(profileId, { object, filters, sort, offset, pageSize }));
+      const response = await api.data.browse(profileId, request);
+      if (lastBrowse.current !== request) return;
+      setResult(response);
       setGridEpoch((previous) => previous + 1);
     } catch (e) {
+      if (lastBrowse.current !== request) return;
       const info = errorInfo(e);
       noteError(profileId, info);
+      setResult(null);
       setError(info);
     } finally {
-      setLoading(false);
+      if (lastBrowse.current === request) setLoading(false);
     }
   }, [profileId, object, filters, sort, offset, pageSize]);
 
+  async function openSql() {
+    const request = lastBrowse.current;
+    if (!request) return;
+    setShowSql(true);
+    setSqlPreview(null);
+    setSqlError(null);
+    if (result && !error) {
+      setSqlPreview({ sql: result.sql, params: result.params, target: describePath(request.object), errors: [], warnings: [] });
+      return;
+    }
+    try {
+      const statement = await api.data.previewBrowse(profileId, request);
+      if (lastBrowse.current === request) setSqlPreview(statement);
+    } catch (failure) {
+      if (lastBrowse.current !== request) return;
+      const info = errorInfo(failure);
+      noteError(profileId, info);
+      setSqlError(info);
+    }
+  }
+
   const saveChanges = useCallback(async () => {
     const current = useApp.getState().gridDrafts[tabId];
-    if (!current || current.saving || current.error?.category === 'outcome_unknown' || loading || !editable || showInsert || showExport) return;
-    setDraft(tabId, { rows: current.rows, saving: true });
+    if (!current || current.saving || current.error?.category === 'outcome_unknown' || loading || showExport || showSql ||
+      ((Object.keys(current.rows).length > 0 || Object.keys(current.deletes ?? {}).length > 0) && !editable) || (current.inserts?.length && insertBlocked)) return;
+    setDraft(tabId, { ...current, error: undefined, saving: true });
     try {
-      const update = await api.write.updateCells(profileId, object, Object.values(current.rows));
+      if (Object.keys(current.deletes ?? {}).length && (structure?.gridSaveVersion ?? 0) < 2) {
+        const metadata = await api.meta.structure(profileId, object, true);
+        if ((metadata.gridSaveVersion ?? 0) < 2) {
+          const info: ErrorInfo = { category: 'unsupported', message: 'The running app is too old to save staged deletions. Preserve your pending rows and restart the app before saving. No changes were sent to the database.' };
+          noteError(profileId, info);
+          setDraft(tabId, { ...current, saving: false, error: info });
+          return;
+        }
+      }
+      const update = await api.write.saveGrid(profileId, object, gridChangesForSave(structure?.columns ?? [], {
+        updates: Object.values(current.rows), inserts: current.inserts?.map(({ values }) => values) ?? [],
+        deletes: Object.values(current.deletes ?? {}),
+      }));
       if (update.status !== 'ok') {
-        setDraft(tabId, { rows: current.rows, error: update.error });
+        setDraft(tabId, { ...current, saving: false, error: update.error ?? { category: 'unknown', message: 'The database did not confirm the changes.' } });
         if (update.error) noteError(profileId, update.error);
         return;
       }
@@ -363,9 +420,9 @@ function DataView({
     } catch (err) {
       const info = errorInfo(err);
       noteError(profileId, info);
-      setDraft(tabId, { rows: current.rows, error: info });
+      setDraft(tabId, { ...current, saving: false, error: info });
     }
-  }, [editable, load, loading, object, profileId, rowCount, setDraft, showExport, showInsert, tabId, toast]);
+  }, [editable, insertBlocked, load, loading, object, profileId, rowCount, setDraft, showExport, showSql, structure, tabId, toast]);
 
   useEffect(() => {
     void load();
@@ -379,42 +436,65 @@ function DataView({
     return off;
   }, [active, saveChanges]);
 
+  function stageRows(values: Record<string, InsertCell>[]) {
+    const current = useApp.getState().gridDrafts[tabId];
+    if (!structure || !result || insertBlocked || loading || current?.saving || current?.error?.category === 'outcome_unknown') return;
+    const count = gridDraftRowCount(current);
+    if (count + values.length > MAX_GRID_UPDATE_ROWS) {
+      toast('error', `Save up to ${MAX_GRID_UPDATE_ROWS} changed rows at a time.`);
+      return;
+    }
+    const inserts = [...(current?.inserts ?? []), ...values.map((row) => ({ id: uid(), values: row }))];
+    setDraft(tabId, { rows: current?.rows ?? {}, inserts, deletes: current?.deletes });
+    const first = structure.columns.findIndex((column) => canEditGridInsertColumn(column) &&
+      result.columns.some(({ name }) => name === column.name));
+    const column = result.columns.findIndex(({ name }) => name === structure.columns[first]?.name);
+    setFocusCell((previous) => ({
+      row: result.rows.length + (current?.inserts?.length ?? 0), column: Math.max(0, column), version: (previous?.version ?? 0) + 1,
+    }));
+  }
+
   function openAddRow() {
-    setInsertSeed(undefined);
-    setShowInsert(true);
+    if (structure) stageRows([newGridRow(structure.columns)]);
   }
 
   function openDuplicate(rowIndexes: number[]) {
-    if (!result) return;
-    const source = displayedRows ?? result.rows;
-    const seed = rowIndexes
-      .map((r) => source[r])
-      .filter((row): row is typeof source[number] => !!row)
-      .map((row) => Object.fromEntries(result.columns.map((c, i) => [c.name, row[i] ?? null])));
-    if (!seed.length) return;
-    setInsertSeed(seed);
-    setShowInsert(true);
+    if (!result || !structure) return;
+    stageRows(rowIndexes.map((row) => newGridRow(structure.columns,
+      draft?.inserts?.[row - result.rows.length]?.values ??
+      Object.fromEntries(result.columns.map((column, i): [string, InsertCell] => {
+        const expression = cellExpression(row, i);
+        return [column.name, expression === 'now' || expression === 'default' ? { kind: expression } : insertCell(displayedRows[row]?.[i] ?? null)];
+      })), true)));
   }
 
-  async function deleteRows(rowIndexes: number[]) {
-    const keys = rowIndexes.map((r) => rowKeys[r]).filter((k): k is NonNullable<(typeof rowKeys)[number]> => !!k);
-    if (!keys.length) {
+  function pasteRows(clipboard: GridRowsClipboard) {
+    if (!structure || !result) return;
+    try {
+      stageRows(pastedGridRows(structure.columns, result.columns.map(({ name }) => name), clipboard));
+    } catch (failure) {
+      toast('error', errorInfo(failure).message);
+    }
+  }
+
+  function deleteRows(rowIndexes: number[]) {
+    const current = useApp.getState().gridDrafts[tabId];
+    if (!result || loading || current?.saving || current?.error?.category === 'outcome_unknown') return;
+    const persisted = rowIndexes.filter((row) => row < result.rows.length);
+    const keys = persisted.map((r) => rowKeys[r]).filter((k): k is NonNullable<(typeof rowKeys)[number]> => !!k);
+    if (keys.length !== persisted.length) {
       toast('error', 'These rows cannot be identified by primary key.');
       return;
     }
-    try {
-      const res = await api.write.deleteRows(profileId, object, keys.map((key) => ({ key })));
-      if (res.status !== 'ok') {
-        if (res.error) { noteError(profileId, res.error); toast('error', res.error.message); }
-        return;
-      }
-      toast('ok', `Deleted ${plural(res.rowsAffected ?? keys.length, 'row')}.`);
-      await load();
-    } catch (e) {
-      const info = errorInfo(e);
-      noteError(profileId, info);
-      toast('error', info.message);
+    const ids = rowIndexes.flatMap((row) => current?.inserts?.[row - result.rows.length]?.id ?? []);
+    const next = stageGridDeletes(current, keys, ids);
+    if (gridDraftRowCount(next) > MAX_GRID_UPDATE_ROWS) {
+      toast('error', `Save up to ${MAX_GRID_UPDATE_ROWS} changed rows at a time.`);
+      return;
     }
+    setDraft(tabId, next);
+    setFocusCell(undefined);
+    if (ids.length) setGridEpoch((previous) => previous + 1);
   }
 
   function onQuickFilter(column: string, op: FilterOp, value?: string) {
@@ -423,10 +503,24 @@ function DataView({
   }
 
   const gridColumns = useMemo(() => result?.columns.map(({ name }) => structure?.columns.find((column) => column.name === name)) ?? [], [result, structure]);
+  function cellExpression(row: number, col: number) {
+    const name = result?.columns[col]?.name;
+    if (!name) return undefined;
+    const insert = draft?.inserts?.[row - (result?.rows.length ?? 0)];
+    if (insert) return insert.values[name]?.kind;
+    const key = rowKeys[row];
+    return key ? draft?.rows[gridRowId(key)]?.changes.find((change) => change.column === name)?.expression : undefined;
+  }
+
   const gridEditing: GridEditing = {
-    choices: (_row, col) => {
+    choices: (row, col) => {
       const column = gridColumns[col];
-      const values: { label: string; value: string | null }[] = [];
+      const values: GridChoice[] = [];
+      if (column && isGridDateTime(column)) return [
+        { label: 'DEFAULT', value: null, expression: 'default', disabled: !gridEditing.canDefault?.(row, col) },
+        { label: 'NULL', value: null, disabled: column.nullable === false },
+        { label: 'NOW()', value: null, expression: 'now' },
+      ];
       if (column && /^(bool|boolean|bit)$/i.test(column.type.trim())) {
         const bit = /^bit$/i.test(column.type.trim());
         values.push({ label: 'True', value: bit ? '1' : 'true' }, { label: 'False', value: bit ? '0' : 'false' });
@@ -434,34 +528,63 @@ function DataView({
       if (column?.nullable === true) values.push({ label: 'NULL', value: null });
       return values;
     },
-    canEdit: (row, col) => !!editable && !!rowKeys[row] && !!gridColumns[col] && canEditGridColumn(gridColumns[col], editable) && !saving && !loading && !unknownOutcome,
+    canEdit: (row, col) => !saving && !loading && !unknownOutcome && !isDeletedRow(row) && !!gridColumns[col] &&
+      (row >= (result?.rows.length ?? 0) ? !insertBlocked && canEditGridInsertColumn(gridColumns[col]) :
+        !!editable && !!rowKeys[row] && canEditGridColumn(gridColumns[col], editable)),
     nullable: (col) => gridColumns[col]?.nullable !== false,
+    isDefault: (row, col) => cellExpression(row, col) === 'default',
+    isNow: (row, col) => cellExpression(row, col) === 'now',
+    canDefault: (row, col) => gridEditing.canEdit(row, col) &&
+      (row >= (result?.rows.length ?? 0) || (!!gridColumns[col] && isGridDateTime(gridColumns[col]))),
+    setDefault: (row, col) => changeGridCell(row, col, null, 'default'),
+    setNow: (row, col) => changeGridCell(row, col, null, 'now'),
     changed: (row, col) => {
       const key = rowKeys[row];
       return !!key && !!draft?.rows[gridRowId(key)]?.changes.some((change) => change.column === result?.columns[col]?.name);
     },
-    change: (row, col, value) => {
-      const key = rowKeys[row];
-      const column = gridColumns[col];
-      const current = useApp.getState().gridDrafts[tabId];
-      if (!key || !column || !result || !gridEditing.canEdit(row, col) || current?.saving) return;
-      const id = gridRowId(key);
-      const originalCell = result.rows[row][col];
-      const before = current?.rows[id];
-      if (!before && Object.keys(current?.rows ?? {}).length >= MAX_GRID_UPDATE_ROWS) {
-        toast('info', `Save up to ${MAX_GRID_UPDATE_ROWS} rows at a time.`);
-        return;
-      }
-      const existing = before?.changes.find((cell) => cell.column === column.name);
-      const original = existing ? existing.original : originalCell === null ? null : cellToText(originalCell);
-      const changes = (before?.changes ?? []).filter((cell) => cell.column !== column.name);
-      if (value !== original) changes.push({ column: column.name, original, value });
-      const rows: Record<string, GridRowUpdate> = { ...current?.rows };
-      if (changes.length) rows[id] = { key, changes };
-      else delete rows[id];
-      setDraft(tabId, Object.keys(rows).length ? { rows } : undefined);
-    },
+    change: changeGridCell,
   };
+
+  function changeGridCell(row: number, col: number, value: string | null, expression?: 'default' | 'now') {
+    const key = rowKeys[row];
+    const column = gridColumns[col];
+    const current = useApp.getState().gridDrafts[tabId];
+    if (!column || !result || !gridEditing.canEdit(row, col) || current?.saving) return;
+    if (expression === undefined && gridInputCell(column, value).kind === 'now') {
+      expression = 'now';
+      value = null;
+    }
+    if (row >= result.rows.length) {
+      changeInsertCell(row, col, expression ? { kind: expression } : value === null ? { kind: 'null' } : { kind: 'value', value });
+      return;
+    }
+    if (!key) return;
+    const id = gridRowId(key);
+    const originalCell = result.rows[row][col];
+    const before = current?.rows[id];
+    if (!before && gridDraftRowCount(current) >= MAX_GRID_UPDATE_ROWS) {
+      toast('info', `Save up to ${MAX_GRID_UPDATE_ROWS} rows at a time.`);
+      return;
+    }
+    const existing = before?.changes.find((cell) => cell.column === column.name);
+    const original = existing ? existing.original : originalCell === null ? null : cellToText(originalCell);
+    const changes = (before?.changes ?? []).filter((cell) => cell.column !== column.name);
+    if (expression || value !== original) changes.push({ column: column.name, original, value, ...(expression ? { expression } : {}) });
+    const rows: Record<string, GridRowUpdate> = { ...current?.rows };
+    if (changes.length) rows[id] = { key, changes };
+    else delete rows[id];
+    setDraft(tabId, Object.keys(rows).length || current?.inserts?.length || Object.keys(current?.deletes ?? {}).length ?
+      { rows, inserts: current?.inserts, deletes: current?.deletes } : undefined);
+  }
+
+  function changeInsertCell(row: number, col: number, value: InsertCell) {
+    const current = useApp.getState().gridDrafts[tabId];
+    const name = result?.columns[col]?.name;
+    const index = row - (result?.rows.length ?? 0);
+    if (!name || !current?.inserts?.[index] || !gridEditing.canEdit(row, col)) return;
+    setDraft(tabId, { rows: current.rows, deletes: current.deletes, inserts: current.inserts.map((insert, i) =>
+      i === index ? { ...insert, values: { ...insert.values, [name]: value } } : insert) });
+  }
 
   const columnNames = structure?.columns.map((c) => c.name) ?? result?.columns.map((c) => c.name) ?? [];
 
@@ -523,14 +646,22 @@ function DataView({
     if (draftFilters[index].applied) commitFilters(next);
     else setDraftFilters(next);
   }
+  function changeJoin(index: number, join: 'and' | 'or') {
+    const next = draftFilters.map((filter, i) => i === index ? {
+      ...filter, join, applied: filter.applied ? { ...filter.applied, join } : undefined,
+    } : filter);
+    if (draftFilters[index].applied) commitFilters(next);
+    else setDraftFilters(next);
+  }
 
   const page = Math.floor(offset / pageSize) + 1;
   const rowsShown = result?.rows.length ?? 0;
 
   const tableActions: TableGridActions = {
-    onAddRow: insertBlocked || !structure ? undefined : openAddRow,
-    onDuplicateRows: insertBlocked || !structure ? undefined : openDuplicate,
-    onDeleteRows: editable ? (rowIndexes) => void deleteRows(rowIndexes) : undefined,
+    onAddRow: insertBlocked || !structure || !result || loading || saving || unknownOutcome ? undefined : openAddRow,
+    onDuplicateRows: insertBlocked || !structure || loading || saving || unknownOutcome ? undefined : openDuplicate,
+    onPasteRows: insertBlocked || !structure || !result || loading || saving || unknownOutcome ? undefined : pasteRows,
+    onDeleteRows: !saving && !loading && !unknownOutcome && (editable || draft?.inserts?.length) ? (rowIndexes) => void deleteRows(rowIndexes) : undefined,
     onQuickFilter: structure ? onQuickFilter : undefined,
     onImport: structure ? (format) => setImportFormat(format) : undefined,
     onFormatInsert: (cols, data) => api.query.rowsAsInsert(profileId, object, cols, data),
@@ -556,10 +687,12 @@ function DataView({
           </span>
         )}
         <span className="spacer" />
-        {!!rowCount && <span className="pill info">{rowCount} edited {rowCount === 1 ? 'row' : 'rows'}</span>}
-        {!!rowCount && <button className="btn small" disabled={saving} onClick={() => { setDraft(tabId, undefined); setGridEpoch((i) => i + 1); if (unknownOutcome) void load(); }}>Discard</button>}
-        <span title={editBlocked ?? (!editable ? 'Cell editing requires a supported transactional table with a primary key.' : sc.hint('Save cell edits', 'save'))}>
-          <button className="btn small" disabled={!rowCount || saving || loading || !!unknownOutcome || !editable} onClick={() => void saveChanges()}>
+        {!!rowCount && <span className="pill info">{rowCount} pending {rowCount === 1 ? 'row' : 'rows'}</span>}
+        {!!rowCount && <button className="btn small" disabled={saving} onClick={() => { setDraft(tabId, undefined); setFocusCell(undefined); setGridEpoch((i) => i + 1); if (unknownOutcome) void load(); }}>Discard</button>}
+        <span title={draft?.inserts?.length || deleteCount ? sc.hint('Save pending rows', 'save') :
+          editBlocked ?? (!editable ? 'Cell editing requires a supported transactional table with a primary key.' : sc.hint('Save cell edits', 'save'))}>
+          <button className="btn small" disabled={!rowCount || saving || loading || !!unknownOutcome ||
+            ((!!Object.keys(draft?.rows ?? {}).length || !!deleteCount) && !editable) || (!!draft?.inserts?.length && !!insertBlocked)} onClick={() => void saveChanges()}>
             {saving ? 'Saving…' : 'Save'}
           </button>
         </span>
@@ -570,8 +703,8 @@ function DataView({
           Export CSV…
         </button>
         <span title={insertBlocked ?? (insertUnknown ? 'The database will check your privileges when you insert.' : '')}>
-          <button className="btn small primary" disabled={!!insertBlocked || !structure} onClick={openAddRow}>
-            ＋ Insert rows
+          <button className="btn small primary" disabled={!tableActions.onAddRow} onClick={openAddRow}>
+            ＋ Add row
           </button>
         </span>
       </div>
@@ -595,8 +728,8 @@ function DataView({
                 <div className="filter-join" role="group" aria-label={`How filter ${i} and filter ${i + 1} combine`}>
                   <span className="filter-join-line" />
                   <div className="segmented tiny" title="AND is evaluated before OR">
-                    <button type="button" aria-pressed={f.join !== 'or'} className={f.join !== 'or' ? 'on' : ''} onClick={() => upd({ join: 'and' })}>AND</button>
-                    <button type="button" aria-pressed={f.join === 'or'} className={f.join === 'or' ? 'on' : ''} onClick={() => upd({ join: 'or' })}>OR</button>
+                    <button type="button" aria-pressed={f.join !== 'or'} className={f.join !== 'or' ? 'on' : ''} onClick={() => changeJoin(i, 'and')}>AND</button>
+                    <button type="button" aria-pressed={f.join === 'or'} className={f.join === 'or' ? 'on' : ''} onClick={() => changeJoin(i, 'or')}>OR</button>
                   </div>
                   <span className="filter-join-line" />
                 </div>
@@ -686,6 +819,7 @@ function DataView({
             );
           })}
           <div className="filter-row" style={{ marginTop: 2 }}>
+            <button className="btn small" disabled={loading || !lastBrowse.current} onClick={() => void openSql()} title="Show SQL for the last applied filters">SQL</button>
             <span className="spacer" />
             <button
               className="btn small"
@@ -712,11 +846,15 @@ function DataView({
           <DataGrid
             key={gridEpoch}
             columns={result.columns}
-            rows={displayedRows ?? result.rows}
+            rows={displayedRows}
+            isNewRow={(row) => row >= result.rows.length}
+            isDeletedRow={isDeletedRow}
+            focusCell={focusCell}
             cellLinks={(row, column) => (structure?.constraints ?? []).flatMap((constraint) => {
               const target = constraint.foreignTarget;
               if (!target || !constraint.columns.includes(result.columns[column].name) || target.columns.length !== constraint.columns.length) return [];
-              const values = constraint.columns.map((name) => (displayedRows ?? result.rows)[row]?.[result.columns.findIndex((item) => item.name === name)]);
+              if (row >= result.rows.length) return [];
+              const values = constraint.columns.map((name) => displayedRows[row]?.[result.columns.findIndex((item) => item.name === name)]);
               if (values.some((value) => value == null || typeof value === 'object')) return [];
               const initialFilters: Filter[] = target.columns.map((name, index) => ({ column: name, op: '=', value: cellToText(values[index]) }));
               return [{ label: `Open ${describePath(target.object)} · ${initialFilters.map((filter) => `${filter.column} = ${filter.value}`).join(', ')}`,
@@ -749,6 +887,8 @@ function DataView({
               {result.totalRows !== undefined && (rowsShown > 0 || result.totalRows !== '0')
                 ? ` of ${BigInt(result.totalRows).toLocaleString()} rows`
                 : ''}
+              {!!draft?.inserts?.length && ` · ${plural(draft.inserts.length, 'pending insert')}`}
+              {!!deleteCount && ` · ${plural(deleteCount, 'pending deletion')}`}
             </span>)}
         <div className="table-status-pagination">
         <span className="muted">Rows per page</span>
@@ -775,19 +915,27 @@ function DataView({
         </div>
       </div>
 
-      {showInsert && structure && (
-        <InsertDialog
-          profileId={profileId}
-          structure={structure}
-          privilegeUnknown={insertUnknown}
-          initialRows={insertSeed}
-          onClose={() => { setShowInsert(false); setInsertSeed(undefined); }}
-          onInserted={() => {
-            setShowInsert(false);
-            setInsertSeed(undefined);
-            onInserted();
-          }}
-        />
+      {showSql && (
+        <Modal title="Filter SQL" onClose={() => setShowSql(false)} footer={<button className="btn" onClick={() => setShowSql(false)}>Close</button>}>
+          <div className="col">
+            <span className="muted small">{error ? 'The request failed. This preview is rebuilt from the last submitted filters, sort and page.' : 'SQL executed for the last submitted filters, sort and page.'} Unapplied changes are not included.</span>
+            {sqlError ? <ErrorView error={sqlError} /> : !sqlPreview ? <Spinner /> : <>
+              <pre className="sql">{sqlPreview.sql}</pre>
+              {sqlPreview.params.length > 0 && <>
+                <b>Bound values</b>
+                <div className="scroll" style={{ maxHeight: 180 }}>
+                  <table className="list"><tbody>
+                    {sqlPreview.params.map((param, i) => <tr key={i}>
+                      <td className="mono muted">{driver === 'postgres' ? `$${i + 1}` : driver === 'mssql' ? `@p${i}` : driver === 'databricks' ? `:p${i}` : `? #${i + 1}`}</td>
+                      <td className="mono">{param.value === null ? 'NULL' : param.value === '' ? <span className="emptystr">(empty text)</span> : param.value}</td>
+                    </tr>)}
+                  </tbody></table>
+                </div>
+              </>}
+              {sqlPreview.errors.map((message, i) => <div key={i} style={{ color: 'var(--danger)' }}>{message}</div>)}
+            </>}
+          </div>
+        </Modal>
       )}
       {importFormat && (
         <TableImportDialog

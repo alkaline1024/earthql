@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { TreeNode } from '@earthql/core';
 import type { TableAction } from '../../../shared/table-actions';
+import type { TableGroup } from '../table-groups';
 
 // Keep context identity stable when the provider component is hot-reloaded.
 export interface SelectionContext {
@@ -10,6 +11,10 @@ export interface SelectionContext {
   focus(node: TreeNode): void;
   action(action: TableAction, nodes: TreeNode[]): void;
   export(nodes: TreeNode[]): void;
+  groups: TableGroup[];
+  editGroup(group: TableGroup | null, nodes?: TreeNode[]): void;
+  assignGroup(nodes: TreeNode[], target: string | null): void;
+  collapseGroups(collapsed: boolean, id?: string): void;
 }
 export const TableTreeSelectionContext = createContext<SelectionContext | null>(null);
 export function useTableTreeSelection() {

@@ -11,6 +11,7 @@ import {
   runBrowse,
   runGridDeletes,
   runGridUpdates,
+  runGridSave,
   runWrite,
   secretFieldsFor,
   splitStatements,
@@ -26,6 +27,7 @@ import {
   type DriverModule,
   type ExecContext,
   type GridRowDelete,
+  type GridChanges,
   type GridRowUpdate,
   type InsertSpec,
   type ObjectPath,
@@ -202,22 +204,31 @@ export class SessionManager {
     const k = keyOf(object);
     if (!refresh) {
       const cached = l.structures.get(k);
-      if (cached) return cached;
+      if (cached) return { ...cached, gridSaveVersion: 2 };
     }
     const s = await l.conn.getStructure(object);
     l.structures.set(k, s);
-    return s;
+    return { ...s, gridSaveVersion: 2 };
+  }
+
+  private async browseColumns(profileId: string, object: ObjectPath) {
+    try {
+      const s = await this.structure(profileId, object);
+      if (s.columnsStatus.state === 'ok') return s.columns;
+    } catch {
+      // Browse with SELECT * when structure cannot be read.
+    }
+    return undefined;
+  }
+
+  async previewBrowse(profileId: string, req: BrowseRequest) {
+    const l = this.get(profileId);
+    return l.conn.dialect.buildBrowse(req, await this.browseColumns(profileId, req.object));
   }
 
   async browse(profileId: string, req: BrowseRequest) {
     const l = this.get(profileId);
-    let columns: TableStructure['columns'] | undefined;
-    try {
-      const s = await this.structure(profileId, req.object);
-      if (s.columnsStatus.state === 'ok') columns = s.columns;
-    } catch {
-      columns = undefined; // browse with SELECT * when structure cannot be read
-    }
+    const columns = await this.browseColumns(profileId, req.object);
     const result = await runBrowse(l.conn, req, columns);
     if (!result.hasMore && (req.offset === 0 || result.rows.length > 0)) {
       return { ...result, totalRows: String(req.offset + result.rows.length) };
@@ -329,6 +340,11 @@ export class SessionManager {
     const { conn } = this.get(profileId);
     const structure = await this.structure(profileId, object, true);
     return runGridUpdates(conn, structure, rows);
+  }
+
+  async saveGrid(profileId: string, object: ObjectPath, changes: GridChanges) {
+    const { conn } = this.get(profileId);
+    return runGridSave(conn, await this.structure(profileId, object, true), changes);
   }
 
   async deleteRows(profileId: string, object: ObjectPath, rows: GridRowDelete[]) {

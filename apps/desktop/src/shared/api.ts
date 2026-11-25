@@ -203,6 +203,7 @@ export interface EarthQLApi {
   };
   data: {
     browse(profileId: string, req: BrowseRequest): Promise<BrowseResult>;
+    previewBrowse(profileId: string, req: BrowseRequest): Promise<BuiltStatement>;
   };
   query: {
     run(profileId: string, runId: string, sql: string, ctx: ExecContext, limit: number): Promise<RunResponse>;
@@ -219,6 +220,7 @@ export interface EarthQLApi {
     previewInsert(profileId: string, spec: InsertSpec): Promise<BuiltStatement>;
     insert(profileId: string, spec: InsertSpec): Promise<WriteResult>;
     updateCells(profileId: string, object: ObjectPath, rows: GridRowUpdate[]): Promise<WriteResult>;
+    saveGrid(profileId: string, object: ObjectPath, changes: import('@earthql/core').GridChanges): Promise<WriteResult>;
     deleteRows(profileId: string, object: ObjectPath, rows: GridRowDelete[]): Promise<WriteResult>;
     previewCreate(profileId: string, spec: CreateTableSpec): Promise<BuiltStatement>;
     create(profileId: string, spec: CreateTableSpec): Promise<WriteResult>;

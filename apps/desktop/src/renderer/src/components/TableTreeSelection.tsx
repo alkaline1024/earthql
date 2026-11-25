@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 import type { ObjectPath, TreeNode } from '@earthql/core';
 import type { TableAction } from '../../../shared/table-actions';
+import { errorInfo, uid } from '../api';
 import { useApp } from '../store';
 import { selectTreeNodes, treeNodeKey } from '../tree-selection';
+import { assignTableGroup, tableGroupContainer, type TableGroup } from '../table-groups';
+import { TAB_GROUP_COLORS } from '../tab-groups';
 import { TableActionDialog } from './TableActionDialog';
 import { TableExportDialog } from './TableExportDialog';
-import { TableTreeSelectionContext as Context } from './table-tree-selection-context';
+import { TableTreeSelectionContext as Context, useTableTreeSelection } from './table-tree-selection-context';
+import { ContextSubmenu } from './ContextSubmenu';
+import { Modal } from './common';
 
 
 export function TableTreeSelection({ profileId, filter, children }: { profileId: string; filter: string; children: ReactNode }) {
@@ -15,6 +20,25 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
   const [action, setAction] = useState<{ action: TableAction; nodes: TreeNode[] } | null>(null);
   const [exportNodes, setExportNodes] = useState<TreeNode[] | null>(null);
   const activeTabId = useApp((state) => state.activeTabId);
+  const groupProfileId = useApp((state) => state.connections[profileId]?.profileId ?? profileId);
+  const allGroups = useApp((state) => state.tableGroups);
+  const groups = allGroups.filter((group) => group.profileId === groupProfileId);
+  const [groupEditor, setGroupEditor] = useState<{ id?: string; name: string; color: string; nodes: TreeNode[] } | null>(null);
+  const [groupError, setGroupError] = useState<string | null>(null);
+  const editGroup = (group: TableGroup | null, nodes: TreeNode[] = []) => {
+    setGroupError(null);
+    setGroupEditor({ id: group?.id, name: group?.name ?? '', color: group?.color ?? TAB_GROUP_COLORS[0], nodes });
+  };
+  const assignGroup = (nodes: TreeNode[], target: string | null) => {
+    const state = useApp.getState();
+    try { state.saveTableGroups(assignTableGroup(state.tableGroups, groupProfileId, nodes, target)); }
+    catch (error) { state.toast('error', errorInfo(error).message); }
+  };
+  const collapseGroups = (collapsed: boolean, id?: string) => {
+    const state = useApp.getState();
+    state.saveTableGroups(state.tableGroups.map((group) =>
+      group.profileId === groupProfileId && (!id || group.id === id) ? { ...group, collapsed } : group));
+  };
   const visible = () => Array.from(tree.current?.querySelectorAll<HTMLElement>('[data-tree-node]') ?? []).map((row) => JSON.parse(row.dataset.treeNode!) as TreeNode);
   useEffect(() => {
     const tab = useApp.getState().tabs.find((item) => item.id === activeTabId);
@@ -49,7 +73,7 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
       return next.selected;
     });
   };
-  return <Context.Provider value={{ selected, select, visible,
+  return <Context.Provider value={{ selected, select, visible, groups, editGroup, assignGroup, collapseGroups,
     focus: (node) => {
       const row = Array.from(tree.current?.querySelectorAll<HTMLElement>('[data-tree-node]') ?? []).find((row) => treeNodeKey(JSON.parse(row.dataset.treeNode!)) === treeNodeKey(node));
       row?.focus(); row?.scrollIntoView({ block: 'nearest' });
@@ -71,5 +95,110 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
     </div>
     {action && <TableActionDialog profileId={profileId} object={action.nodes[0].path as ObjectPath} objects={action.nodes.map((node) => node.path as ObjectPath)} action={action.action} onClose={() => setAction(null)} />}
     {exportNodes && <TableExportDialog profileId={profileId} object={exportNodes[0].path as ObjectPath} selectedObjects={exportNodes.map((node) => node.path as ObjectPath)} views={exportNodes.filter((node) => node.kind === 'view').map((node) => node.path as ObjectPath)} onClose={() => setExportNodes(null)} />}
+    {groupEditor && <Modal title={groupEditor.id ? 'Edit Group' : 'New Group'} narrow onClose={() => setGroupEditor(null)}>
+      <form onSubmit={(event) => {
+        event.preventDefault();
+        const state = useApp.getState();
+        const name = groupEditor.name.trim();
+        if (!name) { setGroupError('Enter a group name.'); return; }
+        try {
+          let next: TableGroup[];
+          if (groupEditor.id) {
+            if (!state.tableGroups.some((group) => group.id === groupEditor.id && group.profileId === groupProfileId)) {
+              throw new Error('This group is no longer available.');
+            }
+            next = state.tableGroups.map((group) => group.id === groupEditor.id ? { ...group, name, color: groupEditor.color } : group);
+          } else {
+            const id = uid();
+            const container = tableGroupContainer(groupEditor.nodes[0]?.path ?? {});
+            next = assignTableGroup([...state.tableGroups, {
+              id, profileId: groupProfileId, container, name, color: groupEditor.color, nodeKeys: [], collapsed: false,
+            }], groupProfileId, groupEditor.nodes, id);
+          }
+          if (state.saveTableGroups(next)) setGroupEditor(null);
+          else setGroupError('Sidebar table groups could not be saved.');
+        } catch (error) { setGroupError(errorInfo(error).message); }
+      }}>
+        <label>Group name<input className="input" style={{ width: '100%', marginTop: 6 }} autoFocus value={groupEditor.name}
+          onChange={(event) => setGroupEditor({ ...groupEditor, name: event.target.value })} /></label>
+        <div className="row" role="radiogroup" aria-label="Group color" style={{ gap: 6, marginTop: 12 }}>
+          {TAB_GROUP_COLORS.map((color) => <button key={color} type="button" role="radio" aria-label={color}
+            aria-checked={groupEditor.color === color} className="tab-group-swatch" style={{ background: color }}
+            onClick={() => setGroupEditor({ ...groupEditor, color })} />)}
+          <input type="color" aria-label="Custom group color" value={groupEditor.color}
+            onChange={(event) => setGroupEditor({ ...groupEditor, color: event.target.value })} />
+        </div>
+        {groupError && <p role="alert" className="err">{groupError}</p>}
+        <div className="row" style={{ justifyContent: 'flex-end', marginTop: 12 }}>
+          <button type="button" className="btn" onClick={() => setGroupEditor(null)}>Cancel</button>
+          <button type="submit" className="btn primary">Save</button>
+        </div>
+      </form>
+    </Modal>}
   </Context.Provider>;
+}
+
+export function TableGroupMenu({ nodes = [], node, group, onClose }: {
+  nodes?: TreeNode[]; node?: TreeNode; group?: TableGroup; onClose(): void;
+}) {
+  const selection = useTableTreeSelection();
+  const target = node ?? nodes[0];
+  const container = tableGroupContainer(target?.path ?? {});
+  const available = selection.groups.filter((group) => group.container === container);
+  const current = group ?? (target && selection.groups.find((group) => group.nodeKeys.includes(treeNodeKey(target))));
+  const compatible = nodes.every((node) => tableGroupContainer(node.path) === container);
+  return <>
+    <div className="conn-menu-separator" role="separator" />
+    {group && <button type="button" role="menuitem" onClick={() => { onClose(); selection.editGroup(group); }}>Edit Group…</button>}
+    {!group && nodes.some((node) => selection.groups.some((group) => group.nodeKeys.includes(treeNodeKey(node)))) &&
+      <button type="button" role="menuitem" onClick={() => { onClose(); selection.assignGroup(nodes, null); }}>Remove from Group</button>}
+    {!group && <ContextSubmenu label="Add to Group" disabled={!compatible}>
+      {available.map((group) => <button type="button" role="menuitem" key={group.id}
+        onClick={() => { onClose(); selection.assignGroup(nodes, group.id); }}>
+        <span className="sidebar-table-group-dot" style={{ background: group.color }} />{group.name}
+      </button>)}
+      {available.length > 0 && <div className="conn-menu-separator" role="separator" />}
+      <button type="button" role="menuitem" onClick={() => { onClose(); selection.editGroup(null, nodes); }}>New Group…</button>
+    </ContextSubmenu>}
+    {current && <button type="button" role="menuitem"
+      onClick={() => { onClose(); selection.collapseGroups(!current.collapsed, current.id); }}>
+      {current.collapsed ? 'Expand Group' : 'Collapse Group'}
+    </button>}
+    <button type="button" role="menuitem" disabled={!selection.groups.length}
+      onClick={() => { onClose(); selection.collapseGroups(true); }}>Collapse All Group</button>
+    <button type="button" role="menuitem" disabled={!selection.groups.length}
+      onClick={() => { onClose(); selection.collapseGroups(false); }}>Expand All Group</button>
+  </>;
+}
+
+export function TableTreeContextMenu({ position, onClose, onEscape, onKeyDown, width = 270, children }: {
+  position: { x: number; y: number }; onClose(): void; onEscape?(): void;
+  onKeyDown?(event: KeyboardEvent<HTMLElement>): void; width?: number; children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.style.left = `${Math.max(8, Math.min(position.x, window.innerWidth - element.offsetWidth - 8))}px`;
+    element.style.top = `${Math.max(8, Math.min(position.y, window.innerHeight - element.offsetHeight - 8))}px`;
+    element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
+  }, [position]);
+  useEffect(() => {
+    window.addEventListener('mousedown', onClose);
+    return () => window.removeEventListener('mousedown', onClose);
+  }, [onClose]);
+  return <div className="conn-context-menu table-tree-context-menu" ref={ref} role="menu" aria-label="Table actions"
+    style={{ position: 'fixed', left: position.x, top: position.y, width, zIndex: 60, padding: 4, borderRadius: 8 }}
+    onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
+      onKeyDown?.(event);
+      if (event.key === 'Escape') { onClose(); onEscape?.(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const root = (event.target as HTMLElement).closest('[role="menu"]') ?? event.currentTarget;
+        const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'))
+          .filter((button) => button.closest('[role="menu"]') === root);
+        const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus();
+      }
+    }}>{children}</div>;
 }

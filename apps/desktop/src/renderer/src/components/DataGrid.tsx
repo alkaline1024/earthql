@@ -18,15 +18,42 @@ import { ContextSubmenu } from './ContextSubmenu';
 import { Modal, plural } from './common';
 import { Kbd, Keys, useShortcuts } from './Shortcut';
 import { GRID_COPY_FORMATS, effectiveAccelerator, matchesAccelerator } from '../../../shared/keybindings';
+import { copyGridRows, gridRowsFromText, type GridRowsClipboard } from '../grid-clipboard';
+import { useApp } from '../store';
 
 const ROW_H = 26;
+
+function GridChevron({ direction }: { direction: 'up' | 'down' }) {
+  const path = direction === 'up' ? 'm3 7.5 3-3 3 3' : 'm3 4.5 3 3 3-3';
+  return <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d={path} />
+  </svg>;
+}
+
+function GridArrowRight() {
+  return <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M2 6h8m-3-3 3 3-3 3" />
+  </svg>;
+}
+
+export interface GridChoice {
+  label: string;
+  value: string | null;
+  expression?: 'default' | 'now';
+  disabled?: boolean;
+}
 
 export interface GridEditing {
   canEdit(row: number, col: number): boolean;
   nullable(col: number): boolean;
-  choices?(row: number, col: number): { label: string; value: string | null }[];
+  choices?(row: number, col: number): GridChoice[];
   changed(row: number, col: number): boolean;
   change(row: number, col: number, value: string | null): void;
+  isDefault?(row: number, col: number): boolean;
+  canDefault?(row: number, col: number): boolean;
+  setDefault?(row: number, col: number): void;
+  isNow?(row: number, col: number): boolean;
+  setNow?(row: number, col: number): void;
 }
 
 /** Table-level actions shown in the context menu; each is independently optional so the caller
@@ -35,6 +62,7 @@ export interface TableGridActions {
   onAddRow?(): void;
   structureLabel?: string;
   onDuplicateRows?(rowIndexes: number[]): void;
+  onPasteRows?(clipboard: GridRowsClipboard): void;
   onDeleteRows?(rowIndexes: number[]): void;
   onQuickFilter?(column: string, op: FilterOp, value?: string): void;
   onImport?(format: 'csv' | 'json' | 'sql'): void;
@@ -109,6 +137,9 @@ export function DataGrid({
   onExportPage,
   tableActions,
   cellLinks,
+  isNewRow,
+  isDeletedRow,
+  focusCell,
 }: {
   columns: ResultColumn[];
   rows: Cell[][];
@@ -125,8 +156,12 @@ export function DataGrid({
   /** Row/table-level actions; omit entirely for read-only results (e.g. SQL query output). */
   tableActions?: TableGridActions;
   cellLinks?(row: number, column: number): { label: string; open(): void }[];
+  isNewRow?(row: number): boolean;
+  isDeletedRow?(row: number): boolean;
+  focusCell?: { row: number; column: number; version: number };
 }) {
   const sc = useShortcuts();
+  const toast = useApp((state) => state.toast);
   const wrap = useRef<HTMLDivElement>(null);
   const colKey = columns.map((c) => c.name + ':' + c.type).join('|');
   const [widths, setWidths] = useState<number[]>(() => initialWidths(columns, rows));
@@ -135,10 +170,9 @@ export function DataGrid({
   // anchor === sel is a single cell; otherwise they bound a drag/shift-extended rectangle.
   const [anchor, setAnchor] = useState<{ r: number; c: number } | null>(null);
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
-  const [viewer, setViewer] = useState<{ col: ResultColumn; value: Cell } | null>(null);
-  const [editor, setEditor] = useState<{ r: number; c: number; initial: string | null } | null>(null);
+  const [viewer, setViewer] = useState<{ col: ResultColumn; value: Cell; expression?: 'DEFAULT' | 'NOW()' } | null>(null);
+  const [editor, setEditor] = useState<{ r: number; c: number; initial: string | null; initialDefault?: boolean; initialNow?: boolean } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState<number[] | null>(null);
   const dragging = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const focusBeforeMenu = useRef<HTMLElement | null>(null);
@@ -190,6 +224,22 @@ export function DataGrid({
 
   const v = useVirtualizer({ count: rows.length, getScrollElement: () => wrap.current, estimateSize: () => ROW_H, overscan: 12 });
 
+  useEffect(() => {
+    if (!focusCell || !rows[focusCell.row]) return;
+    const selection = { r: focusCell.row, c: focusCell.column };
+    setAnchor(selection);
+    setSel(selection);
+    v.scrollToIndex(selection.r);
+    wrap.current?.focus();
+    if (editing?.canEdit(selection.r, selection.c)) setEditor({
+      ...selection, initial: rows[selection.r][selection.c] === null ? null : cellToText(rows[selection.r][selection.c]),
+      initialDefault: editing.isDefault?.(selection.r, selection.c),
+      initialNow: editing.isNow?.(selection.r, selection.c),
+    });
+    // A focus request is issued only when rows are added; typing must not reopen the editor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusCell]);
+
   const startResize = (i: number, e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -206,8 +256,11 @@ export function DataGrid({
 
   function openCell(r: number, c: number) {
     const value = rows[r][c];
-    if (editing?.canEdit(r, c)) setEditor({ r, c, initial: value === null ? null : cellToText(value) });
-    else setViewer({ col: columns[c], value });
+    if (editing?.canEdit(r, c)) setEditor({
+      r, c, initial: value === null ? null : cellToText(value),
+      initialDefault: editing.isDefault?.(r, c), initialNow: editing.isNow?.(r, c),
+    });
+    else setViewer({ col: columns[c], value, expression: editing?.isNow?.(r, c) ? 'NOW()' : editing?.isDefault?.(r, c) ? 'DEFAULT' : undefined });
   }
 
   function finishEdit() {
@@ -247,7 +300,13 @@ export function DataGrid({
 
   function copyRowsPlain() {
     if (!rangeBounds) return;
-    void navigator.clipboard.writeText(toTsv(columns, rangeRows(0, columns.length - 1)));
+    void copyGridRows(columns, rangeRows(0, columns.length - 1),
+      rangeRowIndexes().map((row) => columns.map((_, col) => !!editing?.isDefault?.(row, col))),
+      rangeRowIndexes().map((row) => columns.map((_, col) => !!editing?.isNow?.(row, col)))).catch(reportClipboardError);
+  }
+
+  function reportClipboardError(error: unknown) {
+    toast('error', `Clipboard: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   async function copyAs(format: (typeof GRID_COPY_FORMATS)[number]['format'], scope: 'rows' | 'cells') {
@@ -258,6 +317,10 @@ export function DataGrid({
     if (!data.length) return;
     switch (format) {
       case 'plain':
+        if (scope === 'rows') {
+          await copyGridRows(cols, data, rangeRowIndexes().map((row) => cols.map((_, col) => !!editing?.isDefault?.(row, col)))).catch(reportClipboardError);
+          return;
+        }
         void navigator.clipboard.writeText(toTsv(cols, data));
         return;
       case 'json':
@@ -300,19 +363,23 @@ export function DataGrid({
     }
   }
 
-  async function pasteFromClipboard(fill: boolean) {
-    if (!editing) return;
-    let text: string;
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
+  function pasteText(text: string, mode: 'auto' | 'rows' | 'cells' | 'fill') {
+    const clipboard = gridRowsFromText(text);
+    if (tableActions?.onPasteRows && (mode === 'rows' || (mode === 'auto' &&
+      (clipboard.columns || clipboard.rows.every((row) => row.length === columns.length))))) {
+      tableActions.onPasteRows(clipboard);
       return;
     }
-    if (!text) return;
-    const grid = text.replace(/\r\n/g, '\n').split('\n').map((line) => line.split('\t'));
-    if (fill) {
+    if (mode === 'rows') {
+      toast('error', 'This table is not available for inserting rows.');
+      return;
+    }
+    if (!editing || !sel) return;
+    const grid = clipboard.rows;
+    if (mode === 'fill') {
       if (!rangeBounds) return;
-      const value = grid[0]?.[0] ?? '';
+      const cell = grid[0]?.[0] ?? '';
+      const value = cell === null ? null : cellToText(cell);
       for (let r = rangeBounds.r1; r <= rangeBounds.r2; r++) {
         for (let c = rangeBounds.c1; c <= rangeBounds.c2; c++) {
           if (editing.canEdit(r, c)) editing.change(r, c, value);
@@ -320,15 +387,23 @@ export function DataGrid({
       }
       return;
     }
-    const startR = anchor?.r ?? sel?.r ?? 0;
-    const startC = anchor?.c ?? sel?.c ?? 0;
+    const startR = anchor?.r ?? sel.r;
+    const startC = anchor?.c ?? sel.c;
     grid.forEach((line, dr) => {
       line.forEach((value, dc) => {
         const r = startR + dr;
         const c = startC + dc;
-        if (r < rows.length && c < columns.length && editing.canEdit(r, c)) editing.change(r, c, value);
+        if (r < rows.length && c < columns.length && editing.canEdit(r, c)) editing.change(r, c, value === null ? null : cellToText(value));
       });
     });
+  }
+
+  async function pasteFromClipboard(mode: 'auto' | 'rows' | 'cells' | 'fill') {
+    try {
+      pasteText(await navigator.clipboard.readText(), mode);
+    } catch (error) {
+      reportClipboardError(error);
+    }
   }
 
   function quickFilter(op: FilterOp) {
@@ -356,7 +431,35 @@ export function DataGrid({
   }
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
-    if (!sel || editor || (e.target instanceof HTMLElement && e.target.closest('input, textarea, [contenteditable="true"]'))) return;
+    if (editor || e.nativeEvent.isComposing || (e.target instanceof HTMLElement && e.target.closest('input, textarea, [contenteditable="true"]'))) return;
+    if (tableActions?.onDeleteRows && !tableActions.structureLabel && sel &&
+      matchesAccelerator(e, effectiveAccelerator('grid-delete-rows', sc.overrides))) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!e.repeat) tableActions.onDeleteRows(rangeRowIndexes());
+      return;
+    }
+    if (tableActions?.onAddRow && matchesAccelerator(e, effectiveAccelerator('grid-add-row', sc.overrides))) {
+      e.preventDefault();
+      tableActions.onAddRow();
+      return;
+    }
+    if (tableActions?.onDuplicateRows && sel && matchesAccelerator(e, effectiveAccelerator('grid-duplicate-rows', sc.overrides))) {
+      e.preventDefault();
+      tableActions.onDuplicateRows(rangeRowIndexes());
+      return;
+    }
+    if (matchesAccelerator(e, effectiveAccelerator('sys-paste', sc.overrides)) && (editing || tableActions?.onPasteRows)) {
+      e.preventDefault();
+      void pasteFromClipboard('auto');
+      return;
+    }
+    if (editing && matchesAccelerator(e, effectiveAccelerator('grid-paste-fill', sc.overrides))) {
+      e.preventDefault();
+      void pasteFromClipboard('fill');
+      return;
+    }
+    if (!sel) return;
     if (handleCopyShortcut(e)) return;
     if (matchesAccelerator(e, effectiveAccelerator('sys-select-all', sc.overrides))) {
       if (!rows.length || !columns.length) return;
@@ -367,11 +470,11 @@ export function DataGrid({
       setSel({ r: rows.length - 1, c: columns.length - 1 });
       return;
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === 'c') {
+    if (matchesAccelerator(e, effectiveAccelerator('sys-copy', sc.overrides))) {
       const sc = window.getSelection()?.toString();
       if (sc) return; // let the browser copy a text selection
       e.preventDefault();
-      copySelectedCells();
+      copyRowsPlain();
       return;
     }
     const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
@@ -478,7 +581,7 @@ export function DataGrid({
           >
             <span className="hname">{c.name}</span>
             <span className="htype">{c.type}</span>
-            {sort?.column === c.name && <span className="sort">{sort.dir === 'asc' ? '▲' : '▼'}</span>}
+            {sort?.column === c.name && <span className="sort"><GridChevron direction={sort.dir === 'asc' ? 'up' : 'down'} /></span>}
             <span className="resize" title="Double-click to fit column" onMouseDown={(e) => startResize(i, e)} onClick={(e) => e.stopPropagation()}
               onDoubleClick={(event) => {
                 event.stopPropagation();
@@ -496,6 +599,13 @@ export function DataGrid({
   return (
     <>
       <div className={expandRows ? "grid-wrap expand-rows" : "grid-wrap"} ref={wrap} tabIndex={0} onKeyDown={onKeyDown}
+        onPaste={(event) => {
+          if (editor || (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]')) ||
+            (!editing && !tableActions?.onPasteRows)) return;
+          event.preventDefault();
+          try { pasteText(event.clipboardData.getData('text/plain'), 'auto'); }
+          catch (error) { reportClipboardError(error); }
+        }}
         onContextMenu={(event) => {
           event.preventDefault();
           setAnchor(null);
@@ -509,8 +619,9 @@ export function DataGrid({
           {(expandRows ? rows.map((_, index) => ({ key: index, index, start: index * ROW_H })) : v.getVirtualItems()).map((vr) => {
             const row = rows[vr.index];
             return (
-              <div key={vr.key} data-grid-row={vr.index} className="grid-row" style={{ top: vr.start + 31, height: ROW_H, width: total }}>
-                <div className="gcell rownum" style={{ width: rowNumW }} onContextMenu={tableActions?.structureLabel ? (event) => {
+              <div key={vr.key} data-grid-row={vr.index} className={`grid-row${isNewRow?.(vr.index) ? ' pending-insert' : ''}${isDeletedRow?.(vr.index) ? ' pending-delete' : ''}`} style={{ top: vr.start + 31, height: ROW_H, width: total }}>
+                <div className="gcell rownum" title={isDeletedRow?.(vr.index) ? 'Pending deletion — Save to delete this row' :
+                  isNewRow?.(vr.index) ? 'Pending insert — Save to add this row' : undefined} style={{ width: rowNumW }} onContextMenu={tableActions?.structureLabel ? (event) => {
                   event.preventDefault();
                   event.stopPropagation();
                   if (!selectedRows.includes(vr.index)) {
@@ -519,11 +630,36 @@ export function DataGrid({
                   }
                   openMenu(event.clientX, event.clientY);
                 } : undefined}>
-                  {rowOffset + vr.index + 1}
+                  {isDeletedRow?.(vr.index) ? '−' : isNewRow?.(vr.index) ? '+' : rowOffset + vr.index + 1}
                 </div>
                 {columns.map((col, ci) => {
                   const links = cellLinks?.(vr.index, ci) ?? [];
                   const choices = !links.length && editing?.canEdit(vr.index, ci) ? editing.choices?.(vr.index, ci) : undefined;
+                  const dateTimeChoices = choices?.some((choice) => choice.expression === 'now');
+                  const selectedChoice = dateTimeChoices && choices ? choices.findIndex((choice) =>
+                    editing?.isNow?.(vr.index, ci) ? choice.expression === 'now' :
+                      editing?.isDefault?.(vr.index, ci) ? choice.expression === 'default' :
+                        row[ci] === null && !choice.expression && choice.value === null) : -1;
+                  const choiceControl = !!choices?.length && <span className="grid-cell-choice">
+                    <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" aria-hidden="true">
+                      <path d="m3 4.5 3-3 3 3m-6 3 3 3 3-3" />
+                    </svg>
+                    <select aria-label={`Choose ${col.name}, row ${rowOffset + vr.index + 1}`} value={selectedChoice >= 0 ? selectedChoice : ''}
+                      tabIndex={-1}
+                      onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                      onChange={(event) => {
+                        const choice = choices[Number(event.target.value)];
+                        if (!choice || choice.disabled) return;
+                        if (choice.expression === 'default') editing?.setDefault?.(vr.index, ci);
+                        else if (choice.expression === 'now') editing?.setNow?.(vr.index, ci);
+                        else editing?.change(vr.index, ci, choice.value);
+                        if (editor?.r === vr.index && editor.c === ci) finishEdit();
+                      }}>
+                      <option value="" disabled>Choose a value</option>
+                      {choices.map((choice, index) => <option key={index} value={index} disabled={choice.disabled}>{choice.label}</option>)}
+                    </select>
+                  </span>;
                   return (
                   <div
                     key={ci}
@@ -555,15 +691,17 @@ export function DataGrid({
                           autoFocus
                           rows={1}
                           aria-label={`Edit ${col.name}, row ${rowOffset + vr.index + 1}`}
-                          value={cellToText(row[ci])}
-                          placeholder={row[ci] === null ? 'NULL' : undefined}
+                          value={editing.isNow?.(vr.index, ci) ? 'NOW()' : cellToText(row[ci])}
+                          placeholder={editing.isNow?.(vr.index, ci) ? 'NOW()' : editing.isDefault?.(vr.index, ci) ? 'DEFAULT' : row[ci] === null ? 'NULL' : undefined}
                           onFocus={(event) => event.currentTarget.select()}
                           onChange={(event) => editing.change(vr.index, ci, event.target.value)}
                           onKeyDown={(event) => {
                             event.stopPropagation();
                             if (event.key === 'Escape') {
                               event.preventDefault();
-                              editing.change(vr.index, ci, editor.initial);
+                              if (editor.initialNow) editing.setNow?.(vr.index, ci);
+                              else if (editor.initialDefault) editing.setDefault?.(vr.index, ci);
+                              else editing.change(vr.index, ci, editor.initial);
                               finishEdit();
                             } else if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                               event.preventDefault();
@@ -571,33 +709,23 @@ export function DataGrid({
                             }
                           }}
                         />
-                        {editing.nullable(ci) && (
+                        {dateTimeChoices && choiceControl}
+                        {!dateTimeChoices && editing.nullable(ci) && (
                           <button type="button" title="Set SQL NULL" onMouseDown={(event) => event.preventDefault()} onClick={() => { editing.change(vr.index, ci, null); finishEdit(); }}>
                             NULL
                           </button>
                         )}
+                        {!dateTimeChoices && editing.canDefault?.(vr.index, ci) && <button type="button" title="Use the database default" onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => { editing.setDefault?.(vr.index, ci); finishEdit(); }}>DEFAULT</button>}
                       </div>
                     ) : <>
-                      {renderCell(row[ci])}
-                      {!!choices?.length && <span className="grid-cell-choice">
-                        <svg viewBox="0 0 12 12" width="12" height="12" fill="none" stroke="currentColor" aria-hidden="true">
-                          <path d="m3 4.5 3-3 3 3m-6 3 3 3 3-3" />
-                        </svg>
-                        <select aria-label={`Choose ${col.name}, row ${rowOffset + vr.index + 1}`} value=""
-                          onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
-                          onKeyDown={(event) => event.stopPropagation()}
-                          onChange={(event) => {
-                            const choice = choices[Number(event.target.value)];
-                            if (choice) editing?.change(vr.index, ci, choice.value);
-                          }}>
-                          <option value="" disabled>Choose a value</option>
-                          {choices.map((choice, index) => <option key={index} value={index}>{choice.label}</option>)}
-                        </select>
-                      </span>}
+                      {editing?.isNow?.(vr.index, ci) ? <span className="grid-default">NOW()</span> :
+                        editing?.isDefault?.(vr.index, ci) ? <span className="grid-default">DEFAULT</span> : renderCell(row[ci])}
+                      {choiceControl}
                       {links.map(({ label, open }, index) => (
-                        <button key={index} type="button" className="grid-foreign-link" aria-label={label} title={label}
+                        <button key={index} type="button" className="grid-foreign-link" aria-label={label} title={label} tabIndex={-1}
                           onMouseDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()}
-                          onClick={(event) => { event.stopPropagation(); open(); }}>→</button>
+                          onClick={(event) => { event.stopPropagation(); open(); }}><GridArrowRight /></button>
                       ))}
                     </>}
                   </div>
@@ -619,7 +747,12 @@ export function DataGrid({
             <ContextSubmenu label="Set Value" disabled={!canEditFocus}>
               <button type="button" role="menuitem" onClick={() => invoke(() => setSelectedValues(''))}>EMPTY</button>
               <button type="button" role="menuitem" disabled={!!sel && !editing.nullable(sel.c)} onClick={() => invoke(() => setSelectedValues(null))}>NULL</button>
-              <button type="button" role="menuitem" disabled title="Not supported for existing rows yet">DEFAULT</button>
+              <button type="button" role="menuitem" disabled={!sel || !editing.canDefault?.(sel.r, sel.c)} onClick={() => invoke(() => {
+                if (!rangeBounds) return;
+                for (let r = rangeBounds.r1; r <= rangeBounds.r2; r++) for (let c = rangeBounds.c1; c <= rangeBounds.c2; c++) {
+                  if (editing.canDefault?.(r, c)) editing.setDefault?.(r, c);
+                }
+              })}>DEFAULT</button>
             </ContextSubmenu>
           )}
           {onRefresh && (
@@ -631,33 +764,36 @@ export function DataGrid({
           {editing && !tableActions?.structureLabel && (
             <>
               <div className="conn-menu-separator" role="separator" />
-              <button type="button" role="menuitem" disabled={!canEditFocus} onClick={() => invoke(() => void pasteFromClipboard(false))}>
-                <span>Paste</span><Keys keys="⌘V" />
+              {tableActions?.onPasteRows && <button type="button" role="menuitem" aria-keyshortcuts={sc.aria('sys-paste')} onClick={() => invoke(() => void pasteFromClipboard('rows'))}>
+                <span>Paste Rows</span><Kbd id="sys-paste" />
+              </button>}
+              <button type="button" role="menuitem" disabled={!canEditFocus} onClick={() => invoke(() => void pasteFromClipboard('cells'))}>
+                <span>{tableActions?.onPasteRows ? 'Paste Cells' : 'Paste'}</span>{!tableActions?.onPasteRows && <Kbd id="sys-paste" />}
               </button>
-              <button type="button" role="menuitem" disabled={singleCell} onClick={() => invoke(() => void pasteFromClipboard(true))}>
-                <span>Paste to {singleCell ? 'Selected Cells' : plural(selectedCellCount, 'Cell')}</span><Keys keys="⌘⇧V" />
+              <button type="button" role="menuitem" disabled={singleCell} onClick={() => invoke(() => void pasteFromClipboard('fill'))}>
+                <span>Paste to {singleCell ? 'Selected Cells' : plural(selectedCellCount, 'Cell')}</span><Kbd id="grid-paste-fill" />
               </button>
               {tableActions?.onAddRow && (
                 <button type="button" role="menuitem" onClick={() => invoke(tableActions.onAddRow!)}>
-                  <span>Add Row</span><Keys keys="⌘I" />
+                  <span>Add Row</span><Kbd id="grid-add-row" />
                 </button>
               )}
               {tableActions?.onDuplicateRows && (
                 <button type="button" role="menuitem" disabled={!selectedRows.length} onClick={() => invoke(() => tableActions.onDuplicateRows!(selectedRows))}>
-                  <span>Duplicate {selectedRows.length ? plural(selectedRows.length, 'Row') : 'Rows'}</span><Keys keys="⌘D" />
+                  <span>Duplicate {selectedRows.length ? plural(selectedRows.length, 'Row') : 'Rows'}</span><Kbd id="grid-duplicate-rows" />
                 </button>
               )}
             </>
           )}
           <div className="conn-menu-separator" role="separator" />
-          <button type="button" role="menuitem" disabled={!rangeBounds} onClick={() => invoke(copyRowsPlain)}>
-            Copy {rangeBounds ? plural(selectedRows.length, 'Row') : 'Rows'}
+          <button type="button" role="menuitem" aria-keyshortcuts={sc.aria('sys-copy')} disabled={!rangeBounds} onClick={() => invoke(copyRowsPlain)}>
+            <span>Copy {rangeBounds ? plural(selectedRows.length, 'Row') : 'Rows'}</span><Kbd id="sys-copy" />
           </button>
           <ContextSubmenu label={rangeBounds ? `Copy ${plural(selectedRows.length, 'Row')} As` : 'Copy Rows As'} disabled={!rangeBounds}>
             {copyAsItems('rows')}
           </ContextSubmenu>
           <button type="button" role="menuitem" disabled={!rangeBounds} onClick={() => invoke(copySelectedCells)}>
-            <span>Copy {rangeBounds ? plural(selectedCellCount, 'Cell') : 'Selected Cells'}</span><Keys keys="⌘C" />
+            <span>Copy {rangeBounds ? plural(selectedCellCount, 'Cell') : 'Selected Cells'}</span>
           </button>
           <ContextSubmenu label={rangeBounds ? `Copy ${plural(selectedCellCount, 'Cell')} As` : 'Copy Selected Cells As'} disabled={!rangeBounds}>
             {copyAsItems('cells')}
@@ -695,41 +831,20 @@ export function DataGrid({
                 type="button"
                 role="menuitem"
                 className="destructive"
+                aria-keyshortcuts={tableActions.structureLabel ? undefined : sc.aria('grid-delete-rows')}
                 disabled={!selectedRows.length}
-                onClick={() => invoke(() => { if (tableActions.structureLabel) tableActions.onDeleteRows!(selectedRows); else setConfirmDelete(selectedRows); })}
+                onClick={() => invoke(() => tableActions.onDeleteRows!(selectedRows))}
               >
-                {tableActions.structureLabel ? 'Drop / Delete' : `Delete ${selectedRows.length ? plural(selectedRows.length, 'Row') : 'Rows'}`}
+                <span>{tableActions.structureLabel ? 'Drop / Delete' : `Delete ${selectedRows.length ? plural(selectedRows.length, 'Row') : 'Rows'}`}</span>
+                {!tableActions.structureLabel && <Kbd id="grid-delete-rows" />}
               </button>
             </>
           )}
         </div>
       )}
-      {confirmDelete && (
-        <Modal
-          narrow
-          title={`Delete ${confirmDelete.length} row${confirmDelete.length === 1 ? '' : 's'}?`}
-          onClose={() => setConfirmDelete(null)}
-          footer={
-            <>
-              <button className="btn" onClick={() => setConfirmDelete(null)}>Cancel</button>
-              <button
-                className="btn danger"
-                onClick={() => {
-                  tableActions?.onDeleteRows?.(confirmDelete);
-                  setConfirmDelete(null);
-                }}
-              >
-                Delete
-              </button>
-            </>
-          }
-        >
-          <p>This cannot be undone.</p>
-        </Modal>
-      )}
       {viewer && (
         <Modal title={`${viewer.col.name}`} headExtra={<span className="pill">{viewer.col.type}</span>} onClose={() => setViewer(null)} narrow>
-          {viewer.value === null ? (
+          {viewer.expression ? <div className="grid-default">{viewer.expression} — assigned by the database on Save.</div> : viewer.value === null ? (
             <div className="null" style={{ fontSize: 13 }}>
               NULL — no value (different from an empty string)
             </div>
@@ -741,7 +856,7 @@ export function DataGrid({
             </pre>
           )}
           <div className="row" style={{ marginTop: 10 }}>
-            <button className="btn small" onClick={() => void navigator.clipboard.writeText(cellToText(viewer.value, 'NULL'))}>
+            <button className="btn small" disabled={!!viewer.expression} onClick={() => void navigator.clipboard.writeText(cellToText(viewer.value, 'NULL'))}>
               Copy
             </button>
           </div>

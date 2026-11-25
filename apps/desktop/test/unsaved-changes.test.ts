@@ -17,6 +17,22 @@ describe('unsaved indicators', () => {
     expect(hasUnsavedChanges({ ...draft, saving: true })).toBe(true);
     expect(hasUnsavedChanges({ ...draft, error: { category: 'unknown', message: 'Failed' } })).toBe(true);
   });
+  it('marks insert-only drafts as unsaved, including blank new rows and failed saves', () => {
+    const inserted: GridDraft = { rows: {}, inserts: [{ id: 'new', values: { id: { kind: 'default' } } }] };
+    expect(hasUnsavedChanges(inserted)).toBe(true);
+    expect(hasUnsavedChanges({ ...inserted, saving: true })).toBe(true);
+    expect(hasUnsavedChanges({ ...inserted, error: { category: 'constraint', message: 'Duplicate key' } })).toBe(true);
+    expect(objectHasUnsavedChanges([tab], { t1: inserted }, 'local', object, 'table')).toBe(true);
+    expect(hasUnsavedChanges({ rows: {}, inserts: [] })).toBe(false);
+  });
+  it('keeps deletion-only drafts marked through saving and errors', () => {
+    const removed: GridDraft = { rows: {}, deletes: { one: { key: [{ column: 'id', value: '1' }] } } };
+    expect(hasUnsavedChanges(removed)).toBe(true);
+    expect(hasUnsavedChanges({ ...removed, saving: true })).toBe(true);
+    expect(hasUnsavedChanges({ ...removed, error: { category: 'constraint', message: 'Delete rejected' } })).toBe(true);
+    expect(objectHasUnsavedChanges([tab], { t1: removed }, 'local', object, 'table')).toBe(true);
+    expect(hasUnsavedChanges({ rows: {}, deletes: {} })).toBe(false);
+  });
   it('matches full object identity and connection, regardless of path key order', () => {
     const check = (profile = 'local', path = object, kind = 'table') => objectHasUnsavedChanges([tab], { t1: draft }, profile, path, kind);
     expect(check('local', { name: 'users', schema: 'public', database: 'demo' })).toBe(true);

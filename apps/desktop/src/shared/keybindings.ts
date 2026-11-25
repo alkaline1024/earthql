@@ -109,7 +109,12 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     kind: 'app',
     note: format === 'insert' ? 'With a grid selection in a table that supports INSERT statements.' : 'With a selection focused in the data grid.',
   }))),
-  { id: 'grid-copy', label: 'Copy selected cells', category: 'Data grid', kind: 'fixed', keys: '⌘C' },
+  { id: 'grid-copy', label: 'Copy rows', category: 'Data grid', kind: 'fixed', keys: '⌘C', note: 'Copies every column of the selected rows.' },
+  { id: 'grid-add-row', label: 'Add row', category: 'Data grid', kind: 'app', note: 'Stages a new row until Save.' },
+  { id: 'grid-duplicate-rows', label: 'Duplicate rows', category: 'Data grid', kind: 'app', accelerator: 'CmdOrCtrl+D', note: 'Stages copies of the selected rows until Save.' },
+  { id: 'grid-delete-rows', label: 'Delete rows', category: 'Data grid', kind: 'app', accelerator: 'Backspace', note: 'Marks selected rows for deletion on Save; text editing keeps native deletion.' },
+  { id: 'grid-paste-rows', label: 'Paste rows', category: 'Data grid', kind: 'fixed', keys: '⌘V', note: 'Copied rows are staged as new rows in a table. Text editing keeps native paste.' },
+  { id: 'grid-paste-fill', label: 'Paste into selected cells', category: 'Data grid', kind: 'app', accelerator: 'CmdOrCtrl+Shift+V' },
   { id: 'grid-select-all', label: 'Select all cells', category: 'Data grid', kind: 'fixed', keys: '⌘A', note: 'With a cell selection focused in the grid. Selects all loaded rows and columns.' },
   { id: 'grid-open', label: 'Quick Look / edit cell', category: 'Data grid', kind: 'fixed', keys: '↵ F2' },
   { id: 'grid-move', label: 'Move selection', category: 'Data grid', kind: 'fixed', keys: '↑ ↓ ← →' },
@@ -298,7 +303,7 @@ export function validateAccelerator(accelerator: string): string | null {
   const parts = normalized.split('+');
   const key = parts.pop()!;
   const hasCommandModifier = parts.some((m) => m === 'CmdOrCtrl' || m === 'Ctrl' || m === 'Alt');
-  if (!hasCommandModifier && !/^F\d{1,2}$/.test(key)) return 'Include ⌘, ⌃ or ⌥ so it does not clash with typing.';
+  if (!hasCommandModifier && !/^F\d{1,2}$/.test(key) && normalized !== 'Backspace') return 'Include ⌘, ⌃ or ⌥ so it does not clash with typing.';
   return null;
 }
 

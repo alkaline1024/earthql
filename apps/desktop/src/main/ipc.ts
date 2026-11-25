@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isEarthQLError, secretFieldsFor, type Cell, type ConnectionProfile, type ErrorInfo, type GridRowDelete, type GridRowUpdate, type ObjectPath, type ResultColumn, type SecretField, type Secrets } from '@earthql/core';
+import { isEarthQLError, secretFieldsFor, type BrowseRequest, type Cell, type ConnectionProfile, type ErrorInfo, type GridChanges, type GridRowDelete, type GridRowUpdate, type ObjectPath, type ResultColumn, type SecretField, type Secrets } from '@earthql/core';
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
 import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
 import { SessionManager } from './sessions';
@@ -100,6 +100,8 @@ export function registerIpc(sessions: SessionManager): void {
   handle('meta:privileges', 0, (profileId: string, object) => sessions.get(profileId).conn.getPrivileges(object as any));
   handle('meta:completion', 0, (profileId: string, ctx) => sessions.get(profileId).conn.completionSchema(ctx as any));
   handle('data:browse', 0, (profileId: string, req) => sessions.browse(profileId, req as any));
+  handle('data:previewBrowse', 0, (profileId: string, req: BrowseRequest) => sessions.previewBrowse(profileId, req));
+  handle('write:saveGrid', 0, (profileId: string, object: ObjectPath, changes: GridChanges) => sessions.saveGrid(profileId, object, changes));
 
   // --- queries ----------------------------------------------------------------
   handle('query:run', 0, (profileId: string, runId: string, sql: string, ctx, limit: number) => sessions.run(profileId, runId, sql, ctx as any, limit));

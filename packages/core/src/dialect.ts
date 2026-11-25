@@ -236,6 +236,10 @@ export abstract class Dialect {
           const cell = r[c.name] ?? { kind: 'default' };
           if (cell.kind === 'null') return 'NULL';
           if (cell.kind === 'default') return 'DEFAULT';
+          if (cell.kind === 'now') {
+            if (c.kind !== 'date') errors.push(`NOW() requires a date/time column: ${c.name}`);
+            return this.insertValueExpr('CURRENT_TIMESTAMP', c);
+          }
           params.push({ value: cell.value });
           return this.insertValueExpr(this.placeholder(params.length - 1), c);
         })

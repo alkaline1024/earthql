@@ -52,7 +52,10 @@ export const api: EarthQLApi = {
     privileges: (id, o) => call('meta:privileges', id, o),
     completion: (id, ctx) => call('meta:completion', id, ctx),
   },
-  data: { browse: (id, req) => call('data:browse', id, req) },
+  data: {
+    browse: (id, req) => call('data:browse', id, req),
+    previewBrowse: (id, req) => call('data:previewBrowse', id, req),
+  },
   query: {
     run: (id, runId, sql, ctx, limit) => call('query:run', id, runId, sql, ctx, limit),
     cancel: (runId) => call('query:cancel', runId),
@@ -66,6 +69,7 @@ export const api: EarthQLApi = {
     previewInsert: (id, spec) => call('write:previewInsert', id, spec),
     insert: (id, spec) => call('write:insert', id, spec),
     updateCells: (id, object, rows) => call('write:updateCells', id, object, rows),
+    saveGrid: (id, object, changes) => call('write:saveGrid', id, object, changes),
     deleteRows: (id, object, rows) => call('write:deleteRows', id, object, rows),
     previewCreate: (id, spec) => call('write:previewCreate', id, spec),
     create: (id, spec) => call('write:create', id, spec),

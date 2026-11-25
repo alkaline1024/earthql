@@ -119,10 +119,19 @@ describe('recording keystrokes', () => {
     expect(matchesAccelerator(key('Backspace', { altKey: true }), 'Alt+Backspace')).toBe(true);
     expect(matchesAccelerator(key('Backspace', { altKey: true }), null)).toBe(false);
   });
+  it('reserves unmodified deletion for the grid without consuming modified table actions', () => {
+    const accelerator = effectiveAccelerator('grid-delete-rows', {});
+    expect(validateAccelerator(accelerator!)).toBeNull();
+    expect(matchesAccelerator(key('Backspace'), accelerator)).toBe(true);
+    expect(matchesAccelerator(key('Backspace', { metaKey: true }), accelerator)).toBe(false);
+    expect(matchesAccelerator(key('Backspace', { altKey: true }), accelerator)).toBe(false);
+    expect(findConflict('close-tab', 'Backspace', {})?.id).toBe('grid-delete-rows');
+    expect(matchesAccelerator(key('Backspace'), effectiveAccelerator('grid-delete-rows', { 'grid-delete-rows': null }))).toBe(false);
+  });
 });
 
 describe('validation and conflicts', () => {
-  it('requires a command modifier unless it is a function key', () => {
+  it('requires a command modifier for typing keys', () => {
     expect(validateAccelerator('CmdOrCtrl+T')).toBeNull();
     expect(validateAccelerator('Alt+Up')).toBeNull();
     expect(validateAccelerator('F6')).toBeNull();

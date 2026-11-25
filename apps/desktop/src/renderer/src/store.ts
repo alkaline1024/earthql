@@ -1,10 +1,11 @@
 import { create } from 'zustand';
-import type { ErrorInfo, ExecContext, Filter, GridRowUpdate, ObjectKind, ObjectPath, TreeNode } from '@earthql/core';
+import type { ErrorInfo, ExecContext, Filter, GridRowDelete, GridRowUpdate, InsertCell, ObjectKind, ObjectPath, TreeNode } from '@earthql/core';
 import type { OpenConnection, ProfileSummary } from '../../shared/api';
 import { sanitizeOverrides, type KeybindingOverrides } from '../../shared/keybindings';
 import { api, errorInfo, uid } from './api';
 import { assignTabGroup, type TabGroup } from './tab-groups';
 import { treeNodeKey } from './tree-selection';
+import { parseTableGroups, type TableGroup } from './table-groups';
 
 export interface LiveConnection extends OpenConnection {
   /** 'lost' after a network error; the user can reconnect. */
@@ -55,6 +56,9 @@ export interface Toast {
 
 export interface GridDraft {
   rows: Record<string, GridRowUpdate>;
+  inserts?: { id: string; values: Record<string, InsertCell> }[];
+  /** Existing-row deletions awaiting Save; staging a deletion supersedes that row's edits. */
+  deletes?: Record<string, GridRowDelete>;
   saving?: boolean;
   error?: ErrorInfo;
 }
@@ -69,6 +73,10 @@ interface AppState {
   setSidebarSection(section: 'items' | 'queries' | 'history'): void;
   profiles: ProfileSummary[];
   connections: Record<string, LiveConnection>;
+  sidebarConnectionOrder: string[];
+  moveConnection(sourceId: string, targetId: string, after: boolean): void;
+  tableGroups: TableGroup[];
+  saveTableGroups(groups: TableGroup[]): boolean;
   connecting: Record<string, boolean>;
   connectErrors: Record<string, ErrorInfo | undefined>;
   activeProfileId: string | null;
@@ -202,6 +210,30 @@ function loadKeybindings(): KeybindingOverrides {
   }
 }
 
+function loadSidebarConnectionOrder(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem('earthql.sidebarConnectionOrder') ?? '[]');
+    return Array.isArray(saved) ? [...new Set(saved.filter((id): id is string => typeof id === 'string'))] : [];
+  } catch (error) {
+    console.warn('Sidebar connection order could not be restored.', error);
+    return [];
+  }
+}
+
+function loadTableGroups(): TableGroup[] {
+  try {
+    return parseTableGroups(localStorage.getItem('earthql.tableGroups'));
+  } catch (error) {
+    console.warn('Sidebar table groups could not be restored.', error);
+    return [];
+  }
+}
+
+/** Keep saved session order, ignore closed sessions, and append newly opened connections. */
+export function orderedConnectionIds(connections: Record<string, LiveConnection>, order: string[]): string[] {
+  return [...new Set([...order, ...Object.keys(connections)])].filter((id) => Object.hasOwn(connections, id));
+}
+
 function commitKeybindings(next: KeybindingOverrides) {
   const { toast } = useApp.getState();
   try {
@@ -326,6 +358,36 @@ export const useApp = create<AppState>((set, get) => ({
   setSidebarSection: (sidebarSection) => set({ sidebarSection }),
   profiles: [],
   connections: {},
+  sidebarConnectionOrder: loadSidebarConnectionOrder(),
+  tableGroups: loadTableGroups(),
+  saveTableGroups(groups) {
+    try {
+      localStorage.setItem('earthql.tableGroups', JSON.stringify(groups));
+    } catch {
+      get().toast('error', 'Sidebar table groups could not be saved.');
+      return false;
+    }
+    set({ tableGroups: groups });
+    return true;
+  },
+  moveConnection(sourceId, targetId, after) {
+    const current = get();
+    if (sourceId === targetId || !Object.hasOwn(current.connections, sourceId) || !Object.hasOwn(current.connections, targetId)) return;
+    const savedProfiles = new Set(current.profiles.map(({ profile }) => profile.id));
+    // Retain closed saved profiles, but forget closed temporary sessions.
+    const order = [...new Set([
+      ...current.sidebarConnectionOrder.filter((id) => Object.hasOwn(current.connections, id) || savedProfiles.has(id)),
+      ...Object.keys(current.connections),
+    ])];
+    order.splice(order.indexOf(sourceId), 1);
+    order.splice(order.indexOf(targetId) + (after ? 1 : 0), 0, sourceId);
+    try {
+      localStorage.setItem('earthql.sidebarConnectionOrder', JSON.stringify(order));
+    } catch {
+      get().toast('error', 'Sidebar connection order could not be saved.');
+    }
+    set({ sidebarConnectionOrder: order });
+  },
   connecting: {},
   connectErrors: {},
   activeProfileId: null,

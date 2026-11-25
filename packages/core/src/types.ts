@@ -307,6 +307,7 @@ export interface BrowseResult {
   /** True when at least one more row exists beyond this page. */
   hasMore: boolean;
   sql: string;
+  params: SqlParam[];
   durationMs: number;
 }
 
@@ -362,6 +363,8 @@ export interface TableStructure {
   constraintsStatus: SectionStatus;
   /** Target supports an atomic grid write (independent of privileges and row identity). */
   gridUpdate?: boolean;
+  /** Desktop save protocol; prevents an older main process from silently ignoring staged deletions. */
+  gridSaveVersion?: number;
 }
 
 /** 'yes' / 'no' when the database answered, 'unknown' when the account cannot be checked up front (the database still enforces it). */
@@ -381,7 +384,8 @@ export interface ObjectPrivileges {
 // Insert / Create
 // ---------------------------------------------------------------------------
 
-export type InsertCell = { kind: 'value'; value: string } | { kind: 'null' } | { kind: 'default' };
+/** Explicit NOW() choices are evaluated by the database when the staged rows are saved. */
+export type InsertCell = { kind: 'value'; value: string } | { kind: 'null' } | { kind: 'default' } | { kind: 'now' };
 
 export interface InsertSpec {
   object: ObjectPath;
@@ -394,6 +398,8 @@ export interface GridCellChange {
   column: string;
   original: string | null;
   value: string | null;
+  /** A database-side datetime expression; overrides value without changing original-value matching. */
+  expression?: 'default' | 'now';
 }
 
 export type GridRowKey = { column: string; value: string }[];
@@ -405,6 +411,12 @@ export interface GridRowUpdate {
 
 export interface GridRowDelete {
   key: GridRowKey;
+}
+
+export interface GridChanges {
+  updates: GridRowUpdate[];
+  inserts: Record<string, InsertCell>[];
+  deletes?: GridRowDelete[];
 }
 
 export type ColumnDefault = { kind: 'none' } | { kind: 'literal'; value: string } | { kind: 'expression'; value: string };

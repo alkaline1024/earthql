@@ -44,4 +44,28 @@ describe('closing tabs with unsaved cell edits', () => {
     expect(confirmDiscard).not.toHaveBeenCalled();
     expect(useApp.getState().tabs).toHaveLength(1);
   });
+  it('preserves staged inserts when cancelling close and removes them only after Discard', async () => {
+    const inserted = { rows: {}, inserts: [{ id: 'new', values: { name: { kind: 'value' as const, value: 'pending' } } }] };
+    useApp.setState({ gridDrafts: { table: inserted } });
+    const cancelled = useApp.getState().closeTabs(['table']);
+    useApp.getState().resolveDiscard(false);
+    await cancelled;
+    expect(useApp.getState().gridDrafts.table).toEqual(inserted);
+    const discarded = useApp.getState().closeTabs(['table']);
+    useApp.getState().resolveDiscard(true);
+    await discarded;
+    expect(useApp.getState().gridDrafts).toEqual({});
+  });
+  it('preserves staged deletions on Cancel and clears them on Discard', async () => {
+    const deleted = { rows: {}, deletes: { one: { key: [{ column: 'id', value: '1' }] } } };
+    useApp.setState({ gridDrafts: { table: deleted } });
+    const closing = useApp.getState().closeTabs(['table']);
+    useApp.getState().resolveDiscard(false);
+    await closing;
+    expect(useApp.getState().gridDrafts.table).toEqual(deleted);
+    const discarded = useApp.getState().closeTabs(['table']);
+    useApp.getState().resolveDiscard(true);
+    await discarded;
+    expect(useApp.getState().gridDrafts).toEqual({});
+  });
 });

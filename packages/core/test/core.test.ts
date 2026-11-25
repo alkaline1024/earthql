@@ -3,6 +3,7 @@ import {
   PullBuffer,
   checkRawCondition,
   ScriptRun,
+  runBrowse,
   isReadOnlyStatement,
   previewWithParams,
   redact,
@@ -248,6 +249,19 @@ describe('filter AND / OR', () => {
     const filters = [a, { ...b, join: 'or' as const }];
     for (const d of [mysqlDialect, mssqlDialect, databricksDialect]) expect(d.buildBrowseAll({ object: base.object, filters }).sql).toMatch(/ OR /);
   });
+  it('combines an IN list with another value of the same column in MySQL', () => {
+    const filters = [
+      { column: 'id', op: 'in' as const, value: '1, 2' },
+      { column: 'id', op: '=' as const, value: '3', join: 'or' as const },
+    ];
+    const columns = [{ name: 'id', type: 'int' }];
+    const q = mysqlDialect.buildBrowse({ ...base, filters }, columns);
+    expect(q.errors).toEqual([]);
+    expect(q.sql).toContain('WHERE `id` IN (?, ?) OR `id` = ?');
+    expect(q.params).toEqual([{ value: '1' }, { value: '2' }, { value: '3' }]);
+    expect(mysqlDialect.buildBrowse({ ...base, filters: [filters[0], { ...filters[1], join: 'and' }] }, columns).sql)
+      .toContain('WHERE `id` IN (?, ?) AND `id` = ?');
+  });
 });
 
 describe('operators: between, like and case-sensitive matching', () => {
@@ -316,6 +330,14 @@ describe('raw SQL filter', () => {
   it('is not checked against the column list', () => {
     const q = postgresDialect.buildBrowse({ ...base, filters: [raw('lower(name) = 1')] }, [{ name: 'id', type: 'int' }]);
     expect(q.errors).toEqual([]);
+  });
+  it('accepts a raw IN condition without a column and combines it with a bound MySQL filter', () => {
+    const q = mysqlDialect.buildBrowse({
+      ...base, filters: [raw('id IN (1,2)'), { column: 'id', op: '=', value: '3' }],
+    }, [{ name: 'id', type: 'int' }]);
+    expect(q.errors).toEqual([]);
+    expect(q.sql).toContain('WHERE (id IN (1,2)) AND `id` = ?');
+    expect(q.params).toEqual([{ value: '3' }]);
   });
   it('rejects conditions that could escape the WHERE clause', () => {
     for (const bad of ['', '   ', '1=1); DROP TABLE t; --', 'a = 1; select 2', 'a = 1) OR (b = 2', "a = 'x", 'a = 1 /* x']) {
@@ -498,7 +520,7 @@ describe('PullBuffer', () => {
   });
 });
 
-describe('ScriptRun', () => {
+describe('query runners', () => {
   function fakeConn(behaviour: (sql: string) => { chunk?: CursorChunk; error?: any; hang?: boolean }): DriverConnection {
     return {
       driver: 'postgres',
@@ -525,6 +547,26 @@ describe('ScriptRun', () => {
       },
     } as unknown as DriverConnection;
   }
+
+  it('returns the executed browse SQL and bound values for inspection', async () => {
+    const conn = { ...fakeConn(() => ({
+      chunk: { columns: [{ name: 'id', type: 'int', kind: 'number' }], rows: [[1], [2], [3]], done: true },
+    })), driver: 'mysql' as const, dialect: mysqlDialect };
+    let executed: Parameters<DriverConnection['openCursor']>[0] | undefined;
+    const open = conn.openCursor;
+    conn.openCursor = (statement, context, options) => {
+      executed = statement;
+      return open(statement, context, options);
+    };
+    const result = await runBrowse(conn, {
+      object: { database: 'demo', name: 'customers' },
+      filters: [{ column: 'id', op: 'in', value: '1, 2' }, { column: 'id', op: '=', value: '3', join: 'or' }],
+      offset: 0, pageSize: 100,
+    }, [{ name: 'id', type: 'int' }]);
+    expect({ sql: result.sql, params: result.params }).toEqual(executed);
+    expect(result.params).toEqual([{ value: '1' }, { value: '2' }, { value: '3' }]);
+    expect(result.rows).toEqual([[1], [2], [3]]);
+  });
 
   it('runs statements in order and keeps the last cursor open when limited', async () => {
     const conn = fakeConn((sql) => ({

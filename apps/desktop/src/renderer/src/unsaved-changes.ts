@@ -2,7 +2,7 @@ import type { ObjectPath } from '@earthql/core';
 import type { GridDraft, Tab } from './store';
 
 export function hasUnsavedChanges(draft: GridDraft | undefined): boolean {
-  return !!draft && Object.values(draft.rows).some((row) => row.changes.length > 0);
+  return !!draft && (!!draft.inserts?.length || !!Object.keys(draft.deletes ?? {}).length || Object.values(draft.rows).some((row) => row.changes.length > 0));
 }
 
 export function objectHasUnsavedChanges(
