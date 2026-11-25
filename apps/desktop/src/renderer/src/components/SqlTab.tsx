@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   isReadOnlyStatement,
   splitStatements,
+  statementAt,
   type CompletionSchema,
   type ErrorInfo,
   type ExecContext,
@@ -12,13 +13,19 @@ import {
 import type { HistoryEntry, RunResponse, SavedQuery } from '../../../shared/api';
 import { api, errorInfo, uid } from '../api';
 import { noteError, profileOf, useApp } from '../store';
+import { formatSql } from '../sql-format';
 import { ContextBar } from './ContextBar';
+import { ContextSubmenu } from './ContextSubmenu';
 import { DataGrid } from './DataGrid';
 import { ExportDialog, type ExportOption } from './ExportDialog';
 import { SqlEditor, type SqlEditorHandle } from './SqlEditor';
+import { SplitButton, ToolbarDropdown } from './ToolbarMenu';
 import { ErrorView, Spinner, formatDuration, plural } from './common';
 
-const LIMITS = [100, 500, 1000, 5000, 10000, 50000];
+/** A practical "no cap" sentinel: the SQL itself is never rewritten, this just stops the client
+ *  from capping how many rows it pulls from the (already streaming) cursor. */
+const NO_LIMIT = Number.MAX_SAFE_INTEGER;
+const LIMITS = [100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
 
 const PHASE_TEXT: Record<QueryPhase, string> = {
   connecting: 'Connecting…',
@@ -53,6 +60,8 @@ export function SqlTab({
   const conn = useApp((s) => s.connections[profileId]);
   const profile = profileOf(profileId)?.profile;
   const toast = useApp((s) => s.toast);
+  const sqlRunDefault = useApp((s) => s.sqlRunDefault);
+  const setSqlRunDefault = useApp((s) => s.setSqlRunDefault);
   const editor = useRef<SqlEditorHandle | null>(null);
   const [ctx, setCtx] = useState<ExecContext>(context);
   const [limit, setLimit] = useState(1000);
@@ -105,10 +114,19 @@ export function SqlTab({
   resultsRef.current = results;
   useEffect(() => () => closeCursors(resultsRef.current), [closeCursors]);
 
-  const execute = useCallback(async () => {
+  const execute = useCallback(async (mode: 'current' | 'all') => {
     if (!profile || runRef.current) return;
     const selection = editor.current?.getSelection() ?? '';
-    const text = selection.trim() ? selection : (editor.current?.getText() ?? '');
+    let text: string;
+    if (selection.trim()) {
+      text = selection;
+    } else if (mode === 'all') {
+      text = editor.current?.getText() ?? '';
+    } else {
+      const whole = editor.current?.getText() ?? '';
+      const cursor = editor.current?.getCursor() ?? 0;
+      text = statementAt(splitStatements(whole, profile.driver), cursor)?.sql ?? whole;
+    }
     if (!text.trim()) return;
     const statements = splitStatements(text, profile.driver).length;
     if (statements === 0) return;
@@ -150,14 +168,46 @@ export function SqlTab({
     setPanel('saved');
   }, [savedId]);
 
+  const beautify = useCallback((scope: 'default' | 'selection' | 'all') => {
+    if (!profile || !editor.current) return;
+    try {
+      const range = scope !== 'all' ? editor.current.getSelectionRange() : null;
+      if (range) {
+        const selected = editor.current.getText().slice(range.from, range.to);
+        editor.current.replaceRange(range.from, range.to, formatSql(selected, profile.driver));
+      } else {
+        editor.current.setText(formatSql(editor.current.getText(), profile.driver));
+      }
+    } catch (e) {
+      toast('error', `Could not format this SQL: ${errorInfo(e).message}`);
+    }
+  }, [profile, toast]);
+
+  const saveSqlFile = useCallback(async () => {
+    const text = editor.current?.getText() ?? '';
+    if (!text.trim()) {
+      toast('error', 'The editor is empty.');
+      return;
+    }
+    try {
+      const res = await api.query.saveFile(text, `${(profile?.name || 'query').replace(/\s+/g, '-')}.sql`);
+      if (res.status === 'ok') toast('ok', `Saved to ${res.path}.`);
+    } catch (e) {
+      toast('error', errorInfo(e).message);
+    }
+  }, [profile, toast]);
+
   useEffect(() => {
     if (!active) return;
     return window.earthqlBridge.on('menu:command', (cmd) => {
-      if (cmd === 'run') void execute();
+      if (cmd === 'run') void execute(sqlRunDefault);
+      if (cmd === 'run-all') void execute('all');
       if (cmd === 'cancel') void cancel();
       if (cmd === 'save') saveQuery();
+      if (cmd === 'beautify') beautify('default');
+      if (cmd === 'save-sql-file') void saveSqlFile();
     });
-  }, [active, execute, cancel, saveQuery]);
+  }, [active, execute, cancel, saveQuery, beautify, saveSqlFile, sqlRunDefault]);
 
   async function loadMore(r: StatementResult) {
     if (!r.cursorId) return;
@@ -193,26 +243,65 @@ export function SqlTab({
         </button>
       </ContextBar>
       <div className="toolbar">
+        <ToolbarDropdown
+          trigger={limit === NO_LIMIT ? 'No limit' : `${limit.toLocaleString()} rows`}
+          title={`Limit rows fetched (${profile.driver === 'mssql' ? 'TOP' : 'LIMIT'})`}
+          disabled={!!run}
+        >
+          {(close) => (
+            <>
+              <button type="button" role="menuitem" onClick={() => { setLimit(NO_LIMIT); close(); }}>No limit</button>
+              <div className="conn-menu-separator" role="separator" />
+              {LIMITS.map((n) => (
+                <button type="button" key={n} role="menuitem" onClick={() => { setLimit(n); close(); }}>
+                  {n.toLocaleString()} rows
+                </button>
+              ))}
+            </>
+          )}
+        </ToolbarDropdown>
+        <SplitButton label="Beautify" title="Format SQL (⌘I)" menuLabel="Beautify options" disabled={!!run} onClick={() => beautify('default')}>
+          {(close) => (
+            <>
+              <button type="button" role="menuitem" onClick={() => { beautify('selection'); close(); }}>Format Selection</button>
+              <button type="button" role="menuitem" onClick={() => { beautify('all'); close(); }}>Format Entire Query</button>
+            </>
+          )}
+        </SplitButton>
         {run ? (
           <button className="btn small danger" onClick={() => void cancel()} disabled={run.cancel === 'requesting'} title="Cancel (⌘.)">
             ■ Cancel
           </button>
         ) : (
-          <button className="btn small primary" onClick={() => void execute()} title="Run selection or all (⌘↵)">
-            ▶ Run
-          </button>
+          <SplitButton
+            label={sqlRunDefault === 'all' ? '▶ Run All' : '▶ Run Current'}
+            title={sqlRunDefault === 'all' ? 'Run the whole query (⇧⌘↵)' : 'Run the selection, or the statement under the cursor (⌘↵)'}
+            className="primary"
+            menuLabel="Run options"
+            align="right"
+            onClick={() => void execute(sqlRunDefault)}
+          >
+            {(close) => (
+              <>
+                <button type="button" role="menuitem" onClick={() => { void execute('all'); close(); }}><span>Run All</span><kbd>⇧⌘↵</kbd></button>
+                <button type="button" role="menuitem" onClick={() => { void execute('current'); close(); }}><span>Run Current</span><kbd>⌘↵</kbd></button>
+                <div className="conn-menu-separator" role="separator" />
+                <button type="button" role="menuitem" onClick={() => { saveQuery(); close(); }}>Add to Queries</button>
+                <div className="conn-menu-separator" role="separator" />
+                <button type="button" role="menuitem" onClick={() => { void saveSqlFile(); close(); }}><span>Save SQL as…</span><kbd>⇧⌘S</kbd></button>
+                <div className="conn-menu-separator" role="separator" />
+                <ContextSubmenu label="Default">
+                  <button type="button" role="menuitemradio" aria-checked={sqlRunDefault === 'current'} className={`radio-item${sqlRunDefault === 'current' ? ' on' : ''}`} onClick={() => { setSqlRunDefault('current'); close(); }}>
+                    Run Current
+                  </button>
+                  <button type="button" role="menuitemradio" aria-checked={sqlRunDefault === 'all'} className={`radio-item${sqlRunDefault === 'all' ? ' on' : ''}`} onClick={() => { setSqlRunDefault('all'); close(); }}>
+                    Run All
+                  </button>
+                </ContextSubmenu>
+              </>
+            )}
+          </SplitButton>
         )}
-        <span className="muted small">Load at most</span>
-        <select className="select" style={{ height: 24 }} value={limit} onChange={(e) => setLimit(Number(e.target.value))} disabled={!!run}>
-          {LIMITS.map((n) => (
-            <option key={n} value={n}>
-              {n.toLocaleString()} rows
-            </option>
-          ))}
-        </select>
-        <button className="btn small" onClick={saveQuery}>
-          Save…
-        </button>
         <span className="spacer" />
         {run && (
           <span className="row small">
@@ -252,7 +341,7 @@ export function SqlTab({
             {!runError && results.length === 0 && !run && (
               <div className="state">
                 <p>
-                  Run a query to see results here. <span className="kbd">⌘</span> <span className="kbd">↵</span> runs the selection, or the whole editor.
+                  Run a query to see results here. <span className="kbd">⌘</span> <span className="kbd">↵</span> runs the selection, or {sqlRunDefault === 'all' ? 'the whole editor' : 'the statement under the cursor'}.
                 </p>
                 {schema?.truncated && <p className="muted small">Autocomplete shows only part of this database (very many columns).</p>}
               </div>
@@ -635,7 +724,7 @@ function SidePanel({
           ))}
         {mode === 'saved' &&
           (sav.length === 0 ? (
-            <div className="tree-msg" style={{ padding: 12 }}>{saved.length ? 'No matches.' : 'Save queries you use often with “Save…” (⌘S). They are kept per connection on this Mac.'}</div>
+            <div className="tree-msg" style={{ padding: 12 }}>{saved.length ? 'No matches.' : 'Save queries you use often with “Add to Queries” (⌘S). They are kept per connection on this Mac.'}</div>
           ) : (
             sav.map((s) => (
               <div key={s.id} className="hist-item" onDoubleClick={() => onOpen(s.sql, s.context)}>

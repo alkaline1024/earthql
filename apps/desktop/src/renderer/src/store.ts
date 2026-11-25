@@ -45,6 +45,9 @@ interface AppState {
   treeRefresh: Record<string, number>;
   toasts: Toast[];
   sqlCounter: number;
+  /** Which action the SQL toolbar's Run button performs by default (persisted, app-wide). */
+  sqlRunDefault: 'current' | 'all';
+  setSqlRunDefault(mode: 'current' | 'all'): void;
   discardPrompt: { resolve: (discard: boolean) => void } | null;
   confirmDiscard(): Promise<boolean>;
   resolveDiscard(discard: boolean): void;
@@ -80,6 +83,14 @@ interface AppState {
 
 export const containerKey = (profileId: string, p: Partial<ObjectPath>) =>
   `${profileId}|${p.catalog ?? ''}|${p.database ?? ''}|${p.schema ?? ''}`;
+
+function loadSqlRunDefault(): 'current' | 'all' {
+  try {
+    return localStorage.getItem('earthql.sqlRunDefault') === 'all' ? 'all' : 'current';
+  } catch {
+    return 'current';
+  }
+}
 
 function opened(state: AppState, sessionId: string, connection: OpenConnection): Partial<AppState> {
   const root = containerKey(sessionId, {});
@@ -144,6 +155,15 @@ export const useApp = create<AppState>((set, get) => ({
   treeRefresh: {},
   toasts: [],
   sqlCounter: 0,
+  sqlRunDefault: loadSqlRunDefault(),
+  setSqlRunDefault(mode) {
+    try {
+      localStorage.setItem('earthql.sqlRunDefault', mode);
+    } catch {
+      get().toast('error', 'Default run action could not be saved.');
+    }
+    set({ sqlRunDefault: mode });
+  },
   discardPrompt: null,
   confirmDiscard() {
     if (get().discardPrompt) return Promise.resolve(false);
@@ -281,7 +301,15 @@ export const useApp = create<AppState>((set, get) => ({
     if (ids.some((id) => current.gridDrafts[id]?.saving)) return current.toast('info', 'Wait for the cell changes to finish saving.');
     tabs = current.tabs.filter((tab) => !closing.has(tab.id));
     const activeIndex = current.tabs.findIndex((tab) => tab.id === current.activeTabId);
+    const previousProfileId = current.tabs[activeIndex]?.profileId;
+    // Closing a tab never switches the active connection by itself: stay on another tab for the same
+    // connection (closest to where the active tab was) when one remains, and only fall back to a
+    // different connection's tab once none of the previous connection's tabs are left open.
+    const sameProfile = tabs
+      .filter((tab) => tab.profileId === previousProfileId)
+      .sort((a, b) => Math.abs(current.tabs.indexOf(a) - activeIndex) - Math.abs(current.tabs.indexOf(b) - activeIndex));
     const active = tabs.find((tab) => tab.id === (keepId ?? current.activeTabId))
+      ?? sameProfile[0]
       ?? current.tabs.slice(Math.max(0, activeIndex)).find((tab) => !closing.has(tab.id))
       ?? tabs.at(-1);
     const tabGroups = withoutTabs(current.tabGroups, ids);

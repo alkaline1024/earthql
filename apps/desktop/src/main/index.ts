@@ -93,10 +93,14 @@ function buildMenu(): void {
     {
       label: 'Query',
       submenu: [
-        { label: 'Run', accelerator: 'CmdOrCtrl+Enter', click: send('run') },
+        { label: 'Run Current', accelerator: 'CmdOrCtrl+Enter', click: send('run') },
+        { label: 'Run All', accelerator: 'CmdOrCtrl+Shift+Enter', click: send('run-all') },
         { label: 'Cancel', accelerator: 'CmdOrCtrl+.', click: send('cancel') },
         { type: 'separator' },
-        { label: 'Save', accelerator: 'CmdOrCtrl+S', click: send('save') },
+        { label: 'Beautify', accelerator: 'CmdOrCtrl+I', click: send('beautify') },
+        { type: 'separator' },
+        { label: 'Add to Queries', accelerator: 'CmdOrCtrl+S', click: send('save') },
+        { label: 'Save SQL as…', accelerator: 'CmdOrCtrl+Shift+S', click: send('save-sql-file') },
       ],
     },
     {

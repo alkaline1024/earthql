@@ -55,6 +55,7 @@ export const api: EarthQLApi = {
     more: (cursorId, n) => call('query:more', cursorId, n),
     closeCursor: (cursorId) => call('query:closeCursor', cursorId),
     onPhase: (cb) => bridge.on('query:phase', cb as any),
+    saveFile: (sql, suggestedName) => call('query:saveFile', sql, suggestedName),
   },
   write: {
     previewInsert: (id, spec) => call('write:previewInsert', id, spec),

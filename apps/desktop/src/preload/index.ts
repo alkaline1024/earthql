@@ -9,7 +9,7 @@ const INVOKE = new Set([
   'connection:openSeparate', 'connection:reconnect', 'connection:closeProfile',
   'meta:children', 'meta:structure', 'meta:privileges', 'meta:completion',
   'data:browse',
-  'query:run', 'query:cancel', 'query:more', 'query:closeCursor',
+  'query:run', 'query:cancel', 'query:more', 'query:closeCursor', 'query:saveFile',
   'write:previewInsert', 'write:insert', 'write:previewCreate', 'write:create',
   'write:updateCells',
   'history:list', 'history:clear', 'saved:list', 'saved:save', 'saved:remove',

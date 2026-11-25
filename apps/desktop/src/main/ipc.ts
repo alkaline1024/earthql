@@ -1,5 +1,6 @@
 import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { isEarthQLError, secretFieldsFor, type ConnectionProfile, type ErrorInfo, type GridRowUpdate, type ObjectPath, type SecretField, type Secrets } from '@earthql/core';
@@ -92,6 +93,17 @@ export function registerIpc(sessions: SessionManager): void {
   handle('query:cancel', null, (runId: string) => sessions.cancel(runId));
   handle('query:more', null, (cursorId: string, maxRows: number) => sessions.more(cursorId, maxRows));
   handle('query:closeCursor', null, (cursorId: string) => sessions.closeCursor(cursorId));
+  handle('query:saveFile', null, async (sql: string, suggestedName: string) => {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    const res = await dialog.showSaveDialog(win, {
+      title: 'Save SQL',
+      defaultPath: path.join(os.homedir(), 'Downloads', suggestedName.replace(/[/\\:]/g, '_')),
+      filters: [{ name: 'SQL', extensions: ['sql'] }],
+    });
+    if (res.canceled || !res.filePath) return { status: 'dialog-cancelled' as const };
+    await fs.writeFile(res.filePath, sql, 'utf8');
+    return { status: 'ok' as const, path: res.filePath };
+  });
 
   // --- writes -----------------------------------------------------------------
   handle('write:previewInsert', 0, (profileId: string, spec) => sessions.previewInsert(profileId, spec as any));

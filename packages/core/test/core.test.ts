@@ -6,6 +6,7 @@ import {
   previewWithParams,
   redact,
   splitStatements,
+  statementAt,
   toCsv,
   type CursorChunk,
   type DriverConnection,
@@ -41,6 +42,25 @@ describe('splitStatements', () => {
     const text = '  select 1;\n  select 2';
     const s = splitStatements(text, 'postgres');
     expect(text.slice(s[1].start, s[1].end)).toBe('select 2');
+  });
+});
+
+describe('statementAt', () => {
+  const text = 'select 1;\n\nselect 2;\n\nselect 3';
+  const s = splitStatements(text, 'postgres');
+  it('finds the statement the cursor sits inside', () => {
+    expect(statementAt(s, text.indexOf('2'))).toBe(s[1]);
+    expect(statementAt(s, s[0].start)).toBe(s[0]);
+    expect(statementAt(s, s[0].end)).toBe(s[0]);
+  });
+  it('falls forward to the next statement when the cursor is in a gap between statements', () => {
+    expect(statementAt(s, s[0].end + 1)).toBe(s[1]);
+  });
+  it('falls back to the last statement when the cursor is past everything', () => {
+    expect(statementAt(s, text.length + 10)).toBe(s[2]);
+  });
+  it('returns undefined for an empty statement list', () => {
+    expect(statementAt([], 0)).toBeUndefined();
   });
 });
 

@@ -1788,7 +1788,7 @@ table.list td.mono {
   color: var(--text-2);
   font-size: 12px;
 }
-:is(.conn-context-menu, .tab-context-menu) {
+:is(.conn-context-menu, .tab-context-menu, .toolbar-menu) {
   position: fixed;
   z-index: 100;
   width: 224px;
@@ -1800,7 +1800,7 @@ table.list td.mono {
   background: var(--bg-raised);
   box-shadow: var(--shadow);
 }
-:is(.conn-context-menu, .tab-context-menu) button {
+:is(.conn-context-menu, .tab-context-menu, .toolbar-menu) button {
   display: block;
   width: 100%;
   padding: 7px 10px;
@@ -1810,23 +1810,23 @@ table.list td.mono {
   color: var(--text);
   text-align: left;
 }
-:is(.conn-context-menu, .tab-context-menu) button:hover:not(:disabled),
-:is(.conn-context-menu, .tab-context-menu) button:focus-visible {
+:is(.conn-context-menu, .tab-context-menu, .toolbar-menu) button:hover:not(:disabled),
+:is(.conn-context-menu, .tab-context-menu, .toolbar-menu) button:focus-visible {
   background: var(--selected);
   outline: none;
 }
-:is(.conn-context-menu, .tab-context-menu) button:disabled {
+:is(.conn-context-menu, .tab-context-menu, .toolbar-menu) button:disabled {
   opacity: 0.45;
 }
 .conn-context-menu button.destructive {
   color: var(--danger);
 }
-:is(.tab-context-menu, .sidebar-connection-menu) button {
+:is(.tab-context-menu, .sidebar-connection-menu, .toolbar-menu) button {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-:is(.tab-context-menu, .sidebar-connection-menu) kbd {
+:is(.tab-context-menu, .sidebar-connection-menu, .toolbar-menu) kbd {
   font: inherit;
   color: var(--text-3);
 }
@@ -1834,6 +1834,48 @@ table.list td.mono {
   height: 1px;
   margin: 4px;
   background: var(--line);
+}
+
+/* ---------- SQL toolbar: Limit dropdown, Beautify / Run split buttons ---------- */
+
+.toolbar-dropdown,
+.split-btn {
+  position: relative;
+  display: inline-flex;
+}
+.toolbar-dropdown-caret {
+  margin-left: 2px;
+  font-size: 10px;
+  opacity: 0.7;
+}
+.split-btn > .btn {
+  border-radius: 0;
+}
+.split-btn > .btn:first-child {
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+}
+.split-btn-chevron {
+  width: 18px;
+  padding: 0;
+  margin-left: -1px;
+  border-top-right-radius: 6px !important;
+  border-bottom-right-radius: 6px !important;
+  font-size: 10px;
+}
+.toolbar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 200px;
+}
+.toolbar-menu.align-right {
+  left: auto;
+  right: 0;
+}
+.toolbar-menu .radio-item.on::after {
+  content: '✓';
+  color: var(--accent);
 }
 
 .conn-group-header {

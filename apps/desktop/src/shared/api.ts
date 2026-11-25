@@ -120,6 +120,8 @@ export interface ExportResult {
   error?: ErrorInfo;
 }
 
+export type SaveSqlFileResult = { status: 'ok'; path: string } | { status: 'dialog-cancelled' };
+
 export type TableFileFormat = 'csv' | 'json' | 'sql' | 'xlsx';
 export interface TableExportItem {
   object: ObjectPath;
@@ -199,6 +201,8 @@ export interface EarthQLApi {
     more(cursorId: string, maxRows: number): Promise<CursorChunk>;
     closeCursor(cursorId: string): Promise<void>;
     onPhase(cb: (e: { runId: string; phase: QueryPhase; statementIndex: number }) => void): () => void;
+    /** Writes `sql` to a `.sql` file the user picks via a native save dialog. */
+    saveFile(sql: string, suggestedName: string): Promise<SaveSqlFileResult>;
   };
   write: {
     previewInsert(profileId: string, spec: InsertSpec): Promise<BuiltStatement>;

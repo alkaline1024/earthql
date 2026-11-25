@@ -37,7 +37,13 @@ export interface SqlEditorHandle {
   getText(): string;
   /** Selected text, or '' when nothing is selected. */
   getSelection(): string;
+  /** Absolute offset of the caret (the active end of the selection). */
+  getCursor(): number;
+  /** Absolute offset range of the selection, or null when it is empty. */
+  getSelectionRange(): { from: number; to: number } | null;
   setText(text: string): void;
+  /** Replaces just `[from, to)` — a single undoable step, unlike setText. */
+  replaceRange(from: number, to: number, text: string): void;
   focus(): void;
 }
 
@@ -75,7 +81,7 @@ export function SqlEditor({
         highlightSelectionMatches(),
         syntaxHighlighting(highlight),
         autocompletion({ activateOnTyping: true, icons: true }),
-        placeholder('Write SQL here. ⌘↵ runs the selection, or everything when nothing is selected.'),
+        placeholder('Write SQL here. ⌘↵ runs the selection, or the current statement when nothing is selected.'),
         langConf.current.of(sql({ dialect: DIALECTS[driver], upperCaseKeywords: true })),
         Prec.high(keymap.of([indentWithTab])),
         keymap.of([...closeBracketsKeymap, ...defaultKeymap.filter((k) => k.key !== 'Mod-Enter'), ...searchKeymap, ...historyKeymap, ...completionKeymap]),
@@ -93,7 +99,13 @@ export function SqlEditor({
         const r = v.state.selection.main;
         return r.empty ? '' : v.state.sliceDoc(r.from, r.to);
       },
+      getCursor: () => v.state.selection.main.head,
+      getSelectionRange: () => {
+        const r = v.state.selection.main;
+        return r.empty ? null : { from: r.from, to: r.to };
+      },
       setText: (text) => v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: text } }),
+      replaceRange: (from, to, text) => v.dispatch({ changes: { from, to, insert: text } }),
       focus: () => v.focus(),
     };
     return () => {

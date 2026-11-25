@@ -8,6 +8,16 @@ export interface SplitStatement {
 }
 
 /**
+ * The statement the cursor is positioned in (inclusive of its edges), for "run the current
+ * statement" semantics. Falls back to the next statement after the cursor, then the last one.
+ */
+export function statementAt(statements: SplitStatement[], cursor: number): SplitStatement | undefined {
+  return statements.find((s) => cursor >= s.start && cursor <= s.end)
+    ?? statements.find((s) => s.start >= cursor)
+    ?? statements.at(-1);
+}
+
+/**
  * Split SQL text into statements on `;` (and on lines containing only `GO` for SQL Server),
  * ignoring separators inside quotes, identifiers, comments and PostgreSQL dollar-quoted bodies.
  * Comment-only fragments are dropped.
