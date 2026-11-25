@@ -67,13 +67,19 @@ EARTHQL_IT_MSSQL="127.0.0.1:51433:sa:Eq-test-pw1!:earthql" \
 EARTHQL_IT_SETUP_RO=1 npm run test:integration
 ```
 
-The integration suite runs the same 14 checks per driver: Test Connection, wrong password (auth error, password not
-leaked), unreachable host (network error), create table from a spec → structure (types, defaults, PK), insert value /
-NULL / DEFAULT / Unicode / 38-digit DECIMAL and read back, filter / sort / paging, duplicate columns + BIGINT,
-exact DECIMAL from ad-hoc SQL, row limit + load more, syntax errors, confirmed cancel then run again, autocomplete,
-and a read-only account (reads work, writes rejected as *permission*).
+Unit tests include a shared four-driver SQL/error contract, mocked discovery for each driver, and Databricks session
+and authentication tests. Integration tests exercise PostgreSQL, MySQL and SQL Server against real databases:
+connection and errors, discovery, structure, inserts, filters, paging, grid saves, precision, cancellation and
+autocomplete. Set `EARTHQL_IT_SETUP_RO=1` to also test read-only privileges.
 
-**Databricks is not covered by automated tests yet** — it needs a real workspace and SQL warehouse (see open items).
+Databricks integration tests require a real SQL warehouse and an identity allowed to create and drop a disposable
+table in a dedicated test schema. Set `EARTHQL_IT_DATABRICKS_HOST`, `EARTHQL_IT_DATABRICKS_HTTP_PATH`,
+`EARTHQL_IT_DATABRICKS_CATALOG`, `EARTHQL_IT_DATABRICKS_SCHEMA` and `EARTHQL_IT_DATABRICKS_TOKEN` in your
+environment (do not commit credentials), then run `npm run test:integration`. The suite covers connection,
+authentication, discovery, structure, insertion, filters, SQL errors, autocomplete and unsupported grid edits.
+Unset drivers are skipped; a partially configured Databricks workspace fails the configuration check.
+Set `EARTHQL_IT_REQUIRE_ALL=1` to make the run fail unless all four drivers are configured. Skipped tests do not
+constitute real-database coverage.
 
 ## SQL Server DECIMAL
 

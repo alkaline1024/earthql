@@ -9,6 +9,7 @@ import {
   ScriptRun,
   runBrowse,
   runGridUpdates,
+  runGridSave,
   runWrite,
   type ConnectionProfile,
   type DriverConnection,
@@ -253,6 +254,35 @@ for (const t of TARGETS) {
       expect(n.rows.map((r) => Number(r[0]))).toEqual([1]);
       const pct = await runBrowse(conn, { object, filters: [{ column: 'name', op: 'contains', value: '%' }], offset: 0, pageSize: 10 }, s.columns);
       expect(pct.rows.length).toBe(0);
+      const union = await runBrowse(conn, {
+        object, filters: [{ column: 'id', op: 'in', value: '1, 2' }, { column: 'id', op: '=', value: '3', join: 'or' }],
+        sort: { column: 'id', dir: 'asc' }, offset: 0, pageSize: 10,
+      }, s.columns);
+      expect(union.rows.map((r) => Number(r[0]))).toEqual([1, 2, 3]);
+      const raw = await runBrowse(conn, {
+        object, filters: [{ column: '', op: 'raw', value: 'id IN (1, 3)' }], sort: { column: 'id', dir: 'asc' }, offset: 0, pageSize: 10,
+      }, s.columns);
+      expect(raw.rows.map((r) => Number(r[0]))).toEqual([1, 3]);
+    });
+
+    it('saves staged inserts and deletes together atomically', async () => {
+      const editObject = { ...object, name: `${table}_save` };
+      const qualified = conn.dialect.qualify(editObject);
+      await exec(conn, `CREATE TABLE ${qualified} (id INT NOT NULL PRIMARY KEY, note ${t.textType} NULL)`);
+      try {
+        await exec(conn, `INSERT INTO ${qualified} (id, note) VALUES (1, 'old'), (2, 'delete')`);
+        const structure = await conn.getStructure(editObject);
+        const result = await runGridSave(conn, structure, {
+          updates: [{ key: [{ column: 'id', value: '1' }], changes: [{ column: 'note', original: 'old', value: 'new' }] }],
+          deletes: [{ key: [{ column: 'id', value: '2' }] }],
+          inserts: [{ id: { kind: 'value', value: '3' }, note: { kind: 'null' } }],
+        });
+        expect(result).toMatchObject({ status: 'ok', rowsAffected: 3 });
+        const rows = await exec(conn, `SELECT id, note FROM ${qualified} ORDER BY id`);
+        expect(rows.rows.map(([id, note]) => [Number(id), note])).toEqual([[1, 'new'], [3, null]]);
+      } finally {
+        await exec(conn, `DROP TABLE ${qualified}`);
+      }
     });
 
     it('keeps duplicate column names in order and preserves BIGINT', async () => {

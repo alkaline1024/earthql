@@ -6,6 +6,14 @@ When the user says "commit" or "push" (in Thai or English), commit (and push) di
 or switch to a new branch first. This overrides the general default of branching away from the default branch
 before committing.
 
+## Database feature testing
+
+When adding or changing any database-related feature, add and run tests for every supported driver:
+PostgreSQL, MySQL, SQL Server, and Databricks. Cover each applicable behavior and error/permission edge case;
+explicitly test unsupported capabilities rather than assuming all drivers behave alike. Use the shared driver
+integration tests against real databases where possible and unit or mocked driver tests for offline coverage.
+Report which real-driver tests could not run and why; never treat skipped integration tests as passing coverage.
+
 ## UI text: keyboard shortcuts use symbols, never spelled-out words
 
 Anywhere the UI shows a keyboard shortcut to the user (tooltips, `data-tooltip`, `title`, `<kbd>`, menu items,
