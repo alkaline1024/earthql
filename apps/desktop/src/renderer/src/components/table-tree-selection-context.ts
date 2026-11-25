@@ -9,12 +9,14 @@ export interface SelectionContext {
   select(node: TreeNode, toggle?: boolean, range?: boolean): void;
   visible(): TreeNode[];
   focus(node: TreeNode): void;
+  reveal: { node: TreeNode } | null;
+  finishReveal(node: TreeNode | null, element?: HTMLElement, error?: string): void;
   action(action: TableAction, nodes: TreeNode[]): void;
   export(nodes: TreeNode[]): void;
   groups: TableGroup[];
   editGroup(group: TableGroup | null, nodes?: TreeNode[]): void;
   assignGroup(nodes: TreeNode[], target: string | null): void;
-  collapseGroups(collapsed: boolean, id?: string): void;
+  collapseGroups(collapsed: boolean, id?: string): boolean;
   draggedGroup: string | null;
   setDraggedGroup(id: string | null): void;
   moveGroup(sourceId: string, targetId: string, after: boolean): void;

@@ -4,12 +4,14 @@ import { copyFile, lstat, mkdtemp, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { downloadUpdate, getUpdateManifest, isNewerVersion, readUpdateRelease, releaseKey, type UpdateRelease } from './update-release';
+import type { UpdateStatus } from '../shared/api';
 
 declare const __EARTHQL_UPDATE_PUBLIC_KEY__: string;
 
 const run = promisify(execFile);
 const bundleId = 'com.earthql.app';
 const plistBuddy = '/usr/libexec/PlistBuddy';
+const checkInterval = 30 * 60 * 1000;
 
 async function prepareUpdate(installed: string, release: UpdateRelease, progress: (fraction: number) => void) {
   if (path.extname(installed) !== '.app' || installed !== await realpath(installed) ||
@@ -60,7 +62,10 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
   let busy = false;
   let restarting = false;
   let available = false;
-  const status = () => ({ available, busy });
+  let downloadPercent: number | null = null;
+  let checking = false;
+  let checkGeneration = 0;
+  const status = (): UpdateStatus => ({ available, busy, downloadPercent });
   function publish() {
     for (const window of BrowserWindow.getAllWindows()) window.webContents.send('updates:status', status());
   }
@@ -70,14 +75,26 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
     return { ok: true, value: undefined };
   });
 
-  // Discover releases without interrupting work; the button starts the existing installer.
-  void (async () => {
+  async function discover() {
+    if (busy || restarting || checking) return;
+    checking = true;
+    const generation = checkGeneration;
     try {
       const release = readUpdateRelease(await getUpdateManifest(), key);
-      available = isNewerVersion(release.version, app.getVersion());
-      publish();
-    } catch { /* A failed background check must not interrupt startup. */ }
-  })();
+      const newer = isNewerVersion(release.version, app.getVersion());
+      if (generation === checkGeneration) {
+        available = newer;
+        publish();
+      }
+    } catch (error) {
+      console.warn('Automatic update check failed:', error);
+    } finally {
+      checking = false;
+    }
+  }
+  void discover();
+  const timer = setInterval(() => { void discover(); }, checkInterval);
+  timer.unref();
 
   function message(options: MessageBoxOptions) {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -90,6 +107,7 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
 
   async function check() {
     if (busy || restarting) return;
+    checkGeneration++;
     busy = true;
     publish();
     let stage: string | undefined;
@@ -107,9 +125,20 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
       });
       if (choice.response !== 0) return;
       progress(2);
+      downloadPercent = 0;
+      publish();
       const installed = path.resolve(process.resourcesPath, '../..');
-      stage = await prepareUpdate(installed, release, progress);
+      stage = await prepareUpdate(installed, release, (fraction) => {
+        progress(fraction);
+        const percent = Math.floor(fraction * 100);
+        if (percent !== downloadPercent) {
+          downloadPercent = percent;
+          publish();
+        }
+      });
       progress(-1);
+      downloadPercent = null;
+      publish();
       const install = await message({
         type: 'info', message: `EarthQL ${release.version} is ready to install.`,
         detail: 'Save any pending cell edits or SQL before restarting.',
@@ -133,6 +162,7 @@ export function createUpdateCheck(beforeRestart: () => Promise<void>, restartFai
     } finally {
       progress(-1);
       if (stage) await rm(stage, { recursive: true, force: true }).catch(() => undefined);
+      downloadPercent = null;
       busy = false;
       publish();
     }

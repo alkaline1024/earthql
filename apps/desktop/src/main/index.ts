@@ -101,7 +101,7 @@ function setupUpdates(): void {
     await closeSessionsForQuit();
   }, () => { quitting = false; });
   if (!checkForUpdates) {
-    ipcMain.handle('updates:status', () => ({ ok: true, value: { available: false, busy: false } }));
+    ipcMain.handle('updates:status', () => ({ ok: true, value: { available: false, busy: false, downloadPercent: null } }));
     ipcMain.handle('updates:install', () => ({ ok: true, value: undefined }));
   }
 }

@@ -14,10 +14,13 @@ import { ContextSubmenu } from './ContextSubmenu';
 import { Modal, Spinner } from './common';
 
 
-export function TableTreeSelection({ profileId, filter, children }: { profileId: string; filter: string; children: ReactNode }) {
+export function TableTreeSelection({ profileId, filter, children, renderFooter }: {
+  profileId: string; filter: string; children: ReactNode; renderFooter?: (draggedNodes: TreeNode[] | null, reveal: (node: TreeNode) => void) => ReactNode;
+}) {
   const [selected, setSelected] = useState<TreeNode[]>([]);
   const anchor = useRef<string | null>(null);
   const tree = useRef<HTMLDivElement>(null);
+  const [reveal, setReveal] = useState<{ node: TreeNode } | null>(null);
   const [action, setAction] = useState<{ action: TableAction; nodes: TreeNode[] } | null>(null);
   const [exportNodes, setExportNodes] = useState<TreeNode[] | null>(null);
   const activeTabId = useApp((state) => state.activeTabId);
@@ -71,7 +74,7 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
   };
   const collapseGroups = (collapsed: boolean, id?: string) => {
     const state = useApp.getState();
-    state.saveTableGroups(state.tableGroups.map((group) =>
+    return state.saveTableGroups(state.tableGroups.map((group) =>
       group.profileId === groupProfileId && (!id || group.id === id) ? { ...group, collapsed } : group));
   };
   const moveGroup = (sourceId: string, targetId: string, after: boolean) => {
@@ -126,6 +129,18 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
     });
   };
   return <Context.Provider value={{ selected, select, visible, groups, editGroup, assignGroup, collapseGroups,
+    reveal,
+    finishReveal: (node, element, error) => {
+      if (node && element) {
+        setSelected([node]);
+        anchor.current = treeNodeKey(node);
+        element.focus({ preventScroll: true });
+        element.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      } else {
+        useApp.getState().toast('error', error ? `Could not locate bookmark: ${error}` : 'Bookmark could not be located in the object tree.');
+      }
+      setReveal(null);
+    },
     exportGroups: (container, id) => { void exportGroups(container, id); },
     importGroups: (container) => { void importGroups(container); },
     draggedGroup, moveGroup, draggedNodes,
@@ -159,6 +174,7 @@ export function TableTreeSelection({ profileId, filter, children }: { profileId:
       }}>
       {children}
     </div>
+    {renderFooter?.(draggedNodes, (node) => setReveal({ node }))}
     {action && <TableActionDialog profileId={profileId} object={action.nodes[0].path as ObjectPath} objects={action.nodes.map((node) => node.path as ObjectPath)} action={action.action} onClose={() => setAction(null)} />}
     {exportNodes && <TableExportDialog profileId={profileId} object={exportNodes[0].path as ObjectPath} selectedObjects={exportNodes.map((node) => node.path as ObjectPath)} views={exportNodes.filter((node) => node.kind === 'view').map((node) => node.path as ObjectPath)} onClose={() => setExportNodes(null)} />}
     {groupEditor && <Modal title={groupEditor.id ? 'Edit Group' : 'New Group'} narrow onClose={() => setGroupEditor(null)}>
@@ -286,9 +302,9 @@ export function TableGroupMenu({ nodes = [], node, group, scope, onClose }: {
   </>;
 }
 
-export function TableTreeContextMenu({ position, onClose, onEscape, onKeyDown, width = 270, children }: {
+export function TableTreeContextMenu({ position, onClose, onEscape, onKeyDown, width = 270, label = 'Table actions', children }: {
   position: { x: number; y: number }; onClose(): void; onEscape?(): void;
-  onKeyDown?(event: KeyboardEvent<HTMLElement>): void; width?: number; children: ReactNode;
+  onKeyDown?(event: KeyboardEvent<HTMLElement>): void; width?: number; label?: string; children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -302,7 +318,7 @@ export function TableTreeContextMenu({ position, onClose, onEscape, onKeyDown, w
     window.addEventListener('mousedown', onClose);
     return () => window.removeEventListener('mousedown', onClose);
   }, [onClose]);
-  return <div className="conn-context-menu table-tree-context-menu" ref={ref} role="menu" aria-label="Table actions"
+  return <div className="conn-context-menu table-tree-context-menu" ref={ref} role="menu" aria-label={label}
     style={{ position: 'fixed', left: position.x, top: position.y, width, zIndex: 60, padding: 4, borderRadius: 8, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto' }}
     onMouseDown={(event) => event.stopPropagation()} onKeyDown={(event) => {
       onKeyDown?.(event);

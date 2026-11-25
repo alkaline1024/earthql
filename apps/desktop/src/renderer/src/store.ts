@@ -6,6 +6,7 @@ import { api, errorInfo, uid } from './api';
 import { assignTabGroup, type TabGroup } from './tab-groups';
 import { treeNodeKey } from './tree-selection';
 import { parseTableGroups, type TableGroup } from './table-groups';
+import { parseTableFavorites, updateTableFavorites, type FavoriteEntry } from './table-favorites';
 
 export interface LiveConnection extends OpenConnection {
   /** 'lost' after a network error; the user can reconnect. */
@@ -69,6 +70,10 @@ interface AppState {
   setDraggedTabId(id: string | null, width?: number): void;
   sidebarWidth: number;
   setSidebarWidth(width: number): void;
+  favoritesHeight: number;
+  setFavoritesHeight(height: number): void;
+  bookmarksExpanded: Record<string, boolean>;
+  setBookmarksExpanded(profileId: string, expanded: boolean): void;
   sidebarSection: 'items' | 'queries' | 'history';
   setSidebarSection(section: 'items' | 'queries' | 'history'): void;
   profiles: ProfileSummary[];
@@ -101,6 +106,9 @@ interface AppState {
   /** Tables/views pinned to the top of their sidebar list (persisted). Keys from pinnedTableKey(). */
   pinnedTables: string[];
   setTablePinned(profileId: string, nodes: TreeNode[], pinned: boolean): void;
+  tableFavorites: FavoriteEntry[];
+  setTableFavorites(profileId: string, nodes: TreeNode[], favorite: boolean): void;
+  saveTableFavorites(entries: FavoriteEntry[]): boolean;
   toasts: Toast[];
   notifications: AppNotification[];
   addNotification(category: NotificationCategory, text: string): void;
@@ -229,6 +237,26 @@ function loadTableGroups(): TableGroup[] {
   }
 }
 
+function loadTableFavorites(): FavoriteEntry[] {
+  try {
+    return parseTableFavorites(localStorage.getItem('earthql.tableFavorites'));
+  } catch (error) {
+    console.warn('Table bookmarks could not be restored.', error);
+    return [];
+  }
+}
+
+function loadBookmarksExpanded(): Record<string, boolean> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem('earthql.bookmarksExpanded') ?? '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+  } catch (error) {
+    console.warn('Bookmarks visibility could not be restored.', error);
+    return {};
+  }
+}
+
 /** Keep saved session order, ignore closed sessions, and append newly opened connections. */
 export function orderedConnectionIds(connections: Record<string, LiveConnection>, order: string[]): string[] {
   return [...new Set([...order, ...Object.keys(connections)])].filter((id) => Object.hasOwn(connections, id));
@@ -354,6 +382,33 @@ export const useApp = create<AppState>((set, get) => ({
     try { localStorage.setItem('earthql.sidebarWidth', String(sidebarWidth)); } catch { /* Storage may be unavailable. */ }
     set({ sidebarWidth });
   },
+  favoritesHeight: (() => {
+    try {
+      const height = Number(localStorage.getItem('earthql.favoritesHeight'));
+      return Number.isFinite(height) && height >= 64 ? height : 210;
+    } catch { return 210; }
+  })(),
+  setFavoritesHeight(height) {
+    if (!Number.isFinite(height) || height < 64) return;
+    try {
+      localStorage.setItem('earthql.favoritesHeight', String(height));
+    } catch {
+      get().toast('error', 'Bookmarks height could not be saved.');
+      return;
+    }
+    set({ favoritesHeight: height });
+  },
+  bookmarksExpanded: loadBookmarksExpanded(),
+  setBookmarksExpanded(profileId, expanded) {
+    const next = { ...get().bookmarksExpanded, [profileId]: expanded };
+    try {
+      localStorage.setItem('earthql.bookmarksExpanded', JSON.stringify(next));
+    } catch {
+      get().toast('error', 'Bookmarks visibility could not be saved.');
+      return;
+    }
+    set({ bookmarksExpanded: next });
+  },
   sidebarSection: 'items',
   setSidebarSection: (sidebarSection) => set({ sidebarSection }),
   profiles: [],
@@ -437,6 +492,20 @@ export const useApp = create<AppState>((set, get) => ({
   gridDrafts: {},
   unsavedStructureTabs: {},
   treeRefresh: {},
+  tableFavorites: loadTableFavorites(),
+  setTableFavorites(profileId, nodes, favorite) {
+    get().saveTableFavorites(updateTableFavorites(get().tableFavorites, profileId, nodes, favorite));
+  },
+  saveTableFavorites(next) {
+    try {
+      localStorage.setItem('earthql.tableFavorites', JSON.stringify(next));
+    } catch {
+      get().toast('error', 'Table bookmarks could not be saved.');
+      return false;
+    }
+    set({ tableFavorites: next });
+    return true;
+  },
   pinnedTables: loadPinnedTables(),
   setTablePinned(profileId, nodes, pinned) {
     const keys = nodes.map((node) => pinnedTableKey(profileId, node));

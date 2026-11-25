@@ -214,9 +214,10 @@ describe('table groups', () => {
 
 describe('rendered table group controls', () => {
   const selection = (): SelectionContext => ({
+    reveal: null, finishReveal: vi.fn(),
     selected: [orders], groups: groups.filter((item) => item.profileId === 'profile'),
     select: vi.fn(), visible: () => [orders, summary], focus: vi.fn(), action: vi.fn(), export: vi.fn(),
-    editGroup: vi.fn(), assignGroup: vi.fn(), collapseGroups: vi.fn(),
+    editGroup: vi.fn(), assignGroup: vi.fn(), collapseGroups: vi.fn(() => true),
     draggedGroup: null, setDraggedGroup: vi.fn(), moveGroup: vi.fn(),
     draggedNodes: null, setDraggedNodes: vi.fn(),
     exportGroups: vi.fn(), importGroups: vi.fn(),

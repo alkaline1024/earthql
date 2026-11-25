@@ -1,10 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
-import { DRIVER_LABELS, type ErrorInfo, type ObjectPath, type TreeNode } from '@earthql/core';
-import { api, errorInfo } from '../api';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
+import { describePath, DRIVER_LABELS, type ErrorInfo, type ObjectPath, type TreeNode } from '@earthql/core';
+import { api, errorInfo, uid } from '../api';
 import { connectionName, containerKey, noteError, orderedConnectionIds, pinnedTableKey, useApp, type Theme } from '../store';
 import { TableGroupMenu, TableTreeContextMenu, TableTreeSelection } from './TableTreeSelection';
 import { useTableTreeSelection } from './table-tree-selection-context';
-import { treeNodeKey } from '../tree-selection';
+import { treeNodeIsAncestor, treeNodeKey } from '../tree-selection';
 import { canDropTableNodes, TABLE_GROUP_DRAG_TYPE, TABLE_NODES_DRAG_TYPE, tableGroupContainer, tableNodesDragData, type TableGroup } from '../table-groups';
 import type { TableAction } from '../../../shared/table-actions';
 import { TableImportDialog } from './TableImportDialog';
@@ -18,12 +18,17 @@ import { effectiveAccelerator, matchesAccelerator } from '../../../shared/keybin
 import { QueryLibrary } from './QueryLibrary';
 import { SidebarResizeHandle } from './SidebarResizeHandle';
 import { ObjectIcon } from './ObjectIcon';
+import { addTreeNodesToBookmarks, createFavoriteFolder, favoriteEntryKey, moveFavoriteEntries, moveFavoriteEntry, removeFavoriteFolder, selectFavoriteKeys, type FavoriteEntry, type FavoriteFolder, type TableFavorite } from '../table-favorites';
 
 function nodePathAsContainer(n: TreeNode): Partial<ObjectPath> {
   if (n.kind === 'catalog') return { catalog: n.name };
   if (n.kind === 'database') return { ...n.path, database: n.name };
   if (n.kind === 'schema') return { ...n.path, schema: n.name };
   return n.path;
+}
+
+export function treeNodeFullPath(node: TreeNode): string {
+  return describePath(node.hasChildren ? nodePathAsContainer(node) : node.path);
 }
 
 export function Sidebar() {
@@ -206,6 +211,7 @@ export function Sidebar() {
 
           {summary && conn && activeProfileId && (
             <>
+              <div className="sidebar-connection-header">
               <div className="row" style={{ padding: '2px 12px 6px' }} onContextMenu={(event) => openConnectionMenu(event, activeProfileId)}>
                 <button type="button" className="sidebar-connection-trigger grow" aria-haspopup="dialog"
                   aria-expanded={connectionMenu?.details === true} onClick={(event) => openConnectionMenu(event, activeProfileId, true)}>
@@ -237,14 +243,19 @@ export function Sidebar() {
                   </button>
                 </div>
               )}
-              <div style={{ display: section === 'items' ? 'contents' : 'none' }}>
-              <div style={{ padding: '0 10px 6px' }}>
+              </div>
+              <div className="sidebar-items" hidden={section !== 'items'}>
+              <div className="sidebar-filter">
                 <input className="input" style={{ width: '100%' }} placeholder="Filter loaded objects" value={filter} onChange={(e) => setFilter(e.target.value)} />
               </div>
-              <TableTreeSelection key={activeProfileId} profileId={activeProfileId} filter={filter}>
+              <div className="sidebar-item-panels">
+              <TableTreeSelection key={activeProfileId} profileId={activeProfileId} filter={filter}
+                renderFooter={(nodes, reveal) => <TableFavorites profileId={activeProfileId} filter={filter} draggedTreeNodes={nodes}
+                  onReveal={(node) => { if (!node.name.toLowerCase().includes(filter.toLowerCase())) setFilter(''); reveal(node); }} />}>
                 <TreeChildren key={activeProfileId} profileId={activeProfileId} parent={null} depth={0} filter={filter.toLowerCase()}
                   onSeparate={conn.status === 'connected' ? (name) => setSplit({ sessionId: activeProfileId, name }) : undefined} />
               </TableTreeSelection>
+              </div>
               </div>
             </>
           )}
@@ -337,6 +348,363 @@ export function Sidebar() {
   );
 }
 
+export function TableFavorites({ profileId, filter, draggedTreeNodes = null, onReveal }: {
+  profileId: string; filter: string; draggedTreeNodes?: TreeNode[] | null; onReveal?: (node: TreeNode) => void;
+}) {
+  const connection = useApp((s) => s.connections[profileId]);
+  const favorites = useApp((s) => s.tableFavorites);
+  const openTab = useApp((s) => s.openTab);
+  const setTableFavorites = useApp((s) => s.setTableFavorites);
+  const save = useApp((s) => s.saveTableFavorites);
+  const savedHeight = useApp((s) => s.favoritesHeight);
+  const setFavoritesHeight = useApp((s) => s.setFavoritesHeight);
+  const savedProfileId = connection?.profileId ?? profileId;
+  const expanded = useApp((s) => s.bookmarksExpanded[savedProfileId] ?? true);
+  const setBookmarksExpanded = useApp((s) => s.setBookmarksExpanded);
+  const setExpanded = (value: boolean) => setBookmarksExpanded(savedProfileId, value);
+  const [height, setHeight] = useState(savedHeight);
+  const panel = useRef<HTMLElement>(null);
+  const resize = useRef<{ y: number; height: number; value: number } | null>(null);
+  const [editing, setEditing] = useState<{ id?: string; name: string; sourceKeys?: string[] } | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: FavoriteEntry | null; selected: TableFavorite[]; trigger: HTMLElement } | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const anchor = useRef<string | null>(null);
+  const [dragged, setDragged] = useState<{ entry: FavoriteEntry; keys: string[] } | null>(null);
+  const [drop, setDrop] = useState<{ key: string | null; position: 'before' | 'after' | 'inside' | 'root' } | null>(null);
+  const visible = favorites.filter((favorite): favorite is TableFavorite => favorite.kind !== 'folder' && favorite.profileId === savedProfileId
+    && (!connection?.scope || favorite.path[connection.scope.kind] === connection.scope.name)
+    && describePath(favorite.path).toLowerCase().includes(filter.toLowerCase()));
+  const roots = favorites.filter((entry) => entry.profileId === savedProfileId
+    && (entry.kind === 'folder' || !entry.folderId && visible.includes(entry)));
+  const displayed = roots.flatMap((entry) => entry.kind === 'folder'
+    ? (!entry.collapsed || !!filter ? visible.filter((item) => item.folderId === entry.id) : []) : [entry]);
+  const selectedItems = displayed.filter((item) => selected.includes(favoriteEntryKey(item)));
+
+  useEffect(() => {
+    if (!draggedTreeNodes && !dragged) setDrop(null);
+  }, [draggedTreeNodes, dragged]);
+
+  function isTreeDrag(event: DragEvent<HTMLElement>) {
+    return !!draggedTreeNodes?.length && event.dataTransfer.types.includes(TABLE_NODES_DRAG_TYPE);
+  }
+
+  function treeDrop(event: DragEvent<HTMLElement>, targetKey: string | null, position: 'before' | 'after' | 'inside' | 'root') {
+    if (!isTreeDrag(event) || !draggedTreeNodes) return;
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      const current = useApp.getState().tableFavorites;
+      const next = addTreeNodesToBookmarks(current, savedProfileId, draggedTreeNodes, targetKey, position);
+      const opened = position === 'inside'
+        ? next.map((entry) => entry.kind === 'folder' && favoriteEntryKey(entry) === targetKey ? { ...entry, collapsed: false } : entry)
+        : next;
+      if (save(opened)) setExpanded(true);
+    } catch (error) {
+      useApp.getState().toast('error', errorInfo(error).message);
+    }
+    setDrop(null);
+  }
+
+  function selectFavorite(favorite: TableFavorite, toggle: boolean, range: boolean) {
+    const next = selectFavoriteKeys(selected, displayed, anchor.current, favorite, toggle, range);
+    setSelected(next.selected);
+    anchor.current = next.anchor;
+  }
+
+  function saveEdit() {
+    if (!editing) return;
+    const name = editing.name.trim();
+    if (!name) { setEditError('Enter a folder name.'); return; }
+    const entries = useApp.getState().tableFavorites;
+    if (editing.id && !entries.some((entry) => entry.kind === 'folder' && entry.id === editing.id && entry.profileId === savedProfileId)) {
+      setEditError('Bookmark folder no longer exists.');
+      return;
+    }
+    try {
+      const next = editing.id
+        ? entries.map((entry) => entry.kind === 'folder' && entry.id === editing.id && entry.profileId === savedProfileId ? { ...entry, name } : entry)
+        : createFavoriteFolder(entries, { kind: 'folder', profileId: savedProfileId, id: uid(), name, collapsed: false }, editing.sourceKeys);
+      if (save(next)) setEditing(null);
+    } catch (error) {
+      setEditError(errorInfo(error).message);
+    }
+  }
+
+  function openEditor(id?: string, name = '', sourceKeys?: string[]) {
+    setMenu(null);
+    setEditError(null);
+    setExpanded(true);
+    setEditing({ id, name, sourceKeys });
+  }
+
+  function openMenu(event: MouseEvent<HTMLElement>, entry: FavoriteEntry | null) {
+    event.preventDefault();
+    event.stopPropagation();
+    const trigger = event.currentTarget.querySelector<HTMLElement>('button') ?? event.currentTarget;
+    trigger.focus();
+    const items = entry && entry.kind !== 'folder'
+      ? selectedItems.some((item) => favoriteEntryKey(item) === favoriteEntryKey(entry)) ? selectedItems : [entry] : [];
+    if (entry && entry.kind !== 'folder' && items.length === 1 && favoriteEntryKey(items[0]) === favoriteEntryKey(entry)) {
+      setSelected([favoriteEntryKey(entry)]);
+      anchor.current = favoriteEntryKey(entry);
+    }
+    setMenu({ x: event.clientX, y: event.clientY, entry, selected: items, trigger });
+  }
+
+  function moveFromMenu(sources: TableFavorite[], folder?: FavoriteFolder) {
+    setMenu(null);
+    try {
+      const entries = useApp.getState().tableFavorites;
+      const keys = sources.filter((source) => folder || source.folderId).map(favoriteEntryKey);
+      const moved = moveFavoriteEntries(entries, keys, folder ? favoriteEntryKey(folder) : null, folder ? 'inside' : 'root');
+      save(folder ? moved.map((entry) => entry.kind === 'folder' && favoriteEntryKey(entry) === favoriteEntryKey(folder)
+        ? { ...entry, collapsed: false } : entry) : moved);
+    } catch (error) {
+      useApp.getState().toast('error', errorInfo(error).message);
+    }
+  }
+
+  function positionFor(event: DragEvent<HTMLElement>, target: FavoriteEntry): 'before' | 'after' | 'inside' | null {
+    if (!dragged || dragged.keys.includes(favoriteEntryKey(target))) return null;
+    if (dragged.entry.kind !== 'folder' && target.kind === 'folder') return 'inside';
+    if (dragged.entry.kind === 'folder' && target.kind !== 'folder' && target.folderId) return null;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+  }
+
+  function finishDrop(targetKey: string | null, position: 'before' | 'after' | 'inside' | 'root') {
+    if (!dragged) return;
+    try {
+      const current = useApp.getState().tableFavorites;
+      const next = dragged.entry.kind === 'folder'
+        ? moveFavoriteEntry(current, dragged.keys[0], targetKey, position)
+        : moveFavoriteEntries(current, dragged.keys, targetKey, position);
+      if (next !== current) save(next);
+    } catch (error) {
+      useApp.getState().toast('error', errorInfo(error).message);
+    }
+    setDragged(null);
+    setDrop(null);
+  }
+
+  function dragProps(entry: FavoriteEntry) {
+    const key = favoriteEntryKey(entry);
+    return {
+      draggable: true,
+      onDragStart: (event: DragEvent<HTMLElement>) => {
+        event.stopPropagation();
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData('text/plain', key);
+        const keys = entry.kind !== 'folder' && selectedItems.some((item) => favoriteEntryKey(item) === key)
+          ? selectedItems.map(favoriteEntryKey) : [key];
+        if (entry.kind !== 'folder' && !selectedItems.some((item) => favoriteEntryKey(item) === key)) {
+          setSelected([key]); anchor.current = key;
+        }
+        setDragged({ entry, keys });
+      },
+      onDragEnd: () => { setDragged(null); setDrop(null); },
+      onDragOver: (event: DragEvent<HTMLElement>) => {
+        if (isTreeDrag(event)) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.dataTransfer.dropEffect = 'copy';
+          const bounds = event.currentTarget.getBoundingClientRect();
+          const position = entry.kind === 'folder' ? 'inside' : event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after';
+          setDrop({ key, position });
+          return;
+        }
+        const position = positionFor(event, entry);
+        if (!position) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'move';
+        setDrop({ key, position });
+      },
+      onDragLeave: (event: DragEvent<HTMLElement>) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDrop((current) => current?.key === key ? null : current);
+      },
+      onDrop: (event: DragEvent<HTMLElement>) => {
+        if (isTreeDrag(event)) {
+          const bounds = event.currentTarget.getBoundingClientRect();
+          treeDrop(event, key, entry.kind === 'folder' ? 'inside' : event.clientY < bounds.top + bounds.height / 2 ? 'before' : 'after');
+          return;
+        }
+        const position = positionFor(event, entry);
+        if (!position) return;
+        event.preventDefault();
+        event.stopPropagation();
+        finishDrop(key, position);
+      },
+    };
+  }
+
+  function rowClass(entry: FavoriteEntry) {
+    const key = favoriteEntryKey(entry);
+    return `${dragged?.keys.includes(key) ? ' dragging' : ''}${drop?.key === key ? ` drop-${drop.position}` : ''}`;
+  }
+
+  function renderFavorite(favorite: TableFavorite) {
+    const path = describePath(favorite.path);
+    const node: TreeNode = { kind: favorite.kind, name: favorite.path.name, path: favorite.path, hasChildren: false };
+    return <div className={`table-favorite${selected.some((key) => key === favoriteEntryKey(favorite)) ? ' selected' : ''}${rowClass(favorite)}`} key={favoriteEntryKey(favorite)} {...dragProps(favorite)}
+      onContextMenu={(event) => openMenu(event, favorite)}>
+      <button type="button" className="table-favorite-open" title={`${path} — Drag to reorder`} aria-pressed={selectedItems.includes(favorite)}
+        onClick={(event) => {
+          const toggle = event.metaKey || event.ctrlKey;
+          selectFavorite(favorite, toggle, event.shiftKey);
+          if (!toggle && !event.shiftKey) {
+            openTab({ kind: 'table', profileId, object: favorite.path, objectKind: favorite.kind, initialView: 'data' });
+            onReveal?.(node);
+          }
+        }}>
+        <ObjectIcon kind={favorite.kind} />
+        <span><span className="table-favorite-name">{favorite.path.name}</span><span className="table-favorite-path">{path}</span></span>
+      </button>
+      <button type="button" className="table-favorite-remove" aria-label={`Remove ${path} from bookmarks`}
+        title="Remove from Bookmarks" onClick={() => setTableFavorites(savedProfileId, [node], false)}>×</button>
+    </div>;
+  }
+
+  function renderFolder(folder: FavoriteFolder) {
+    const children = visible.filter((favorite) => favorite.folderId === folder.id);
+    const isOpen = !folder.collapsed || !!filter;
+    return <div key={favoriteEntryKey(folder)}>
+      <div className={`table-favorite-folder${rowClass(folder)}`} {...dragProps(folder)} onContextMenu={(event) => openMenu(event, folder)}>
+        <button type="button" className="table-favorite-folder-toggle" aria-expanded={isOpen} title={`${folder.name} — Drag to reorder or drop a bookmark here`}
+          onClick={() => {
+            const entries = useApp.getState().tableFavorites;
+            save(entries.map((entry) => entry.kind === 'folder' && entry.profileId === savedProfileId && entry.id === folder.id
+              ? { ...entry, collapsed: !entry.collapsed } : entry));
+          }}>
+          <span className={`chev${isOpen ? ' open' : ''}`} aria-hidden="true">▶</span>
+          <ObjectIcon kind="catalog" /><span className="table-favorite-name">{folder.name}</span>
+        </button>
+        <button type="button" className="table-favorite-remove" aria-label={`Rename folder ${folder.name}`} title="Rename folder"
+          onClick={() => openEditor(folder.id, folder.name)}>✎</button>
+        <button type="button" className="table-favorite-remove" aria-label={`Remove folder ${folder.name}`} title="Remove folder (bookmarks move to the top level)"
+          onClick={() => {
+            try { save(removeFavoriteFolder(useApp.getState().tableFavorites, savedProfileId, folder.id)); }
+            catch (error) { useApp.getState().toast('error', errorInfo(error).message); }
+          }}>×</button>
+      </div>
+      {isOpen && <div className="table-favorite-folder-children">{children.map(renderFavorite)}</div>}
+    </div>;
+  }
+
+  return (
+    <section ref={panel} className="table-favorites" style={{ height: expanded ? height : undefined }} aria-label="Bookmarked tables and views"
+      onDragOver={(event) => {
+        if (!isTreeDrag(event)) return;
+        event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDrop({ key: null, position: 'root' });
+      }}
+      onDrop={(event) => treeDrop(event, null, 'root')}
+      onContextMenu={(event) => {
+      if (!(event.target as HTMLElement).closest('.modal, [role="menu"]')) openMenu(event, null);
+    }}>
+      {expanded && <div className="favorites-resize-handle" role="separator" aria-label="Resize bookmarks" aria-orientation="horizontal"
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !panel.current) return;
+          event.preventDefault();
+          const current = panel.current.getBoundingClientRect().height;
+          resize.current = { y: event.clientY, height: current, value: current };
+          event.currentTarget.setPointerCapture(event.pointerId);
+        }}
+        onPointerMove={(event) => {
+          if (!resize.current || !panel.current?.parentElement) return;
+          const maximum = Math.max(64, panel.current.parentElement.clientHeight - 80);
+          const next = Math.max(64, Math.min(maximum, resize.current.height - event.clientY + resize.current.y));
+          resize.current.value = next;
+          setHeight(next);
+        }}
+        onPointerUp={(event) => {
+          if (resize.current) setFavoritesHeight(resize.current.value);
+          resize.current = null;
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        }}
+        onPointerCancel={() => { resize.current = null; setHeight(savedHeight); }}
+        onLostPointerCapture={() => { resize.current = null; }}
+      />}
+      <div className={`table-favorites-header${drop?.position === 'root' ? ' drop-inside' : ''}`}
+        onDragOver={(event) => {
+          if (isTreeDrag(event)) {
+            event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = 'copy'; setDrop({ key: null, position: 'root' }); return;
+          }
+          if (!dragged || dragged.entry.kind === 'folder') return;
+          event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDrop({ key: null, position: 'root' });
+        }}
+        onDragLeave={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDrop((current) => current?.position === 'root' ? null : current);
+        }}
+        onDrop={(event) => {
+          if (isTreeDrag(event)) { treeDrop(event, null, 'root'); return; }
+          if (!dragged || dragged.entry.kind === 'folder') return;
+          event.preventDefault(); finishDrop(null, 'root');
+        }}>
+        <button type="button" className="table-favorites-heading" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}
+          title="Drop a bookmark here to move it to the top level">
+          <span className={`chev${expanded ? ' open' : ''}`} aria-hidden="true">▶</span>
+          Bookmarks <span className="table-favorites-count">{visible.length}</span>
+        </button>
+        <button type="button" className="table-favorite-remove table-favorite-new-folder" aria-label="New bookmarks folder" data-tooltip="+ New Folder..."
+          onClick={() => openEditor()}>＋</button>
+      </div>
+      {expanded && (roots.length ? <div className="table-favorites-list" onDragOver={(event) => {
+        if (!dragged) return;
+        const bounds = event.currentTarget.getBoundingClientRect();
+        if (event.clientY < bounds.top + 24) event.currentTarget.scrollTop -= 12;
+        else if (event.clientY > bounds.bottom - 24) event.currentTarget.scrollTop += 12;
+      }}>{roots.map((entry) => entry.kind === 'folder' ? renderFolder(entry) : renderFavorite(entry))}</div>
+        : <div className="table-favorites-empty">{filter ? 'No matching bookmarks' : 'Right-click a table or view to add it.'}</div>)}
+      {menu && <TableTreeContextMenu position={menu} label="Bookmarks actions" width={220}
+        onClose={() => setMenu(null)} onEscape={() => menu.trigger.focus()}>
+        <FavoriteContextMenu entry={menu.entry} selected={menu.selected} folders={favorites.filter((entry): entry is FavoriteFolder => entry.kind === 'folder' && entry.profileId === savedProfileId)}
+          onCreate={() => openEditor()}
+          onRename={(folder) => openEditor(folder.id, folder.name)}
+          onDelete={(folder) => {
+            setMenu(null);
+            try { save(removeFavoriteFolder(useApp.getState().tableFavorites, savedProfileId, folder.id)); }
+            catch (error) { useApp.getState().toast('error', errorInfo(error).message); }
+          }}
+          onMove={moveFromMenu}
+          onMoveNew={(items) => openEditor(undefined, '', items.map(favoriteEntryKey))} />
+      </TableTreeContextMenu>}
+      {editing && <Modal title={editing.id ? 'Rename Folder' : 'New Folder'} narrow onClose={() => setEditing(null)}>
+        <form onSubmit={(event) => { event.preventDefault(); saveEdit(); }}>
+          <label>Folder name<input className="input" style={{ width: '100%', marginTop: 6 }} autoFocus value={editing.name}
+            onChange={(event) => { setEditing({ ...editing, name: event.target.value }); setEditError(null); }} /></label>
+          {editError && <p className="err" role="alert">{editError}</p>}
+          <div className="row" style={{ justifyContent: 'flex-end', marginTop: 16 }}>
+            <button type="button" className="btn" onClick={() => setEditing(null)}>Cancel</button>
+            <button type="submit" className="btn primary">{editing.id ? 'Save' : 'Create'}</button>
+          </div>
+        </form>
+      </Modal>}
+    </section>
+  );
+}
+
+export function FavoriteContextMenu({ entry, selected, folders, onCreate, onRename, onDelete, onMove, onMoveNew }: {
+  entry: FavoriteEntry | null; selected: TableFavorite[]; folders: FavoriteFolder[]; onCreate(): void; onRename(folder: FavoriteFolder): void;
+  onDelete(folder: FavoriteFolder): void; onMove(favorites: TableFavorite[], folder?: FavoriteFolder): void; onMoveNew(favorites: TableFavorite[]): void;
+}) {
+  return <>
+    <button type="button" role="menuitem" onClick={onCreate}>Create Folder</button>
+    {entry?.kind === 'folder' && <>
+      <button type="button" role="menuitem" onClick={() => onRename(entry)}>Rename Folder</button>
+      <button type="button" role="menuitem" onClick={() => onDelete(entry)}>Delete Folder</button>
+    </>}
+    {entry && entry.kind !== 'folder' && <>
+      <ContextSubmenu label="Move to">
+        {folders.map((folder) => <button type="button" role="menuitem" key={favoriteEntryKey(folder)}
+          disabled={selected.every((item) => item.folderId === folder.id)} onClick={() => onMove(selected, folder)}>{folder.name}</button>)}
+        {folders.length > 0 && <div className="conn-menu-separator" role="separator" />}
+        <button type="button" role="menuitem" onClick={() => onMoveNew(selected)}>New Folder...</button>
+      </ContextSubmenu>
+      <button type="button" role="menuitem" disabled={!selected.some((item) => item.folderId)} onClick={() => onMove(selected)}>Remove from Folder</button>
+    </>}
+  </>;
+}
+
 function SplitConnectionDialog({ sessionId, initialName, onClose }: { sessionId: string; initialName?: string; onClose: () => void }) {
   const kind = useApp((s) => s.connections[sessionId]?.capabilities.hierarchy[0]);
   const defaultName = useApp((s) => kind === 'catalog' ? s.connections[sessionId]?.defaultContext.catalog : s.connections[sessionId]?.defaultContext.database);
@@ -408,6 +776,18 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
   const [nodes, setNodes] = useState<TreeNode[] | null>(() => cached?.revision === refresh ? cached.nodes ?? null : null);
   const [error, setError] = useState<ErrorInfo | null>(null);
   const [retry, setRetry] = useState(0);
+
+  useEffect(() => {
+    const target = selection.reveal?.node;
+    if (!target || !target.path.name || (parent && !treeNodeIsAncestor(parent, { ...target.path, name: target.path.name }))) return;
+    if (!parent && target.path.database && target.path.database !== defaultDatabase) setShowOtherDatabases(true);
+    if (error) { selection.finishReveal(null, undefined, error.message); return; }
+    if (!nodes) return;
+    const path = { ...target.path, name: target.path.name };
+    if (!nodes.some((node) => node.hasChildren ? treeNodeIsAncestor(node, path) : treeNodeKey(node) === treeNodeKey(target))) {
+      selection.finishReveal(null);
+    }
+  }, [selection.reveal, nodes, error, parent, defaultDatabase]);
 
   useEffect(() => {
     if (!connection) return;
@@ -524,6 +904,10 @@ export function TableGroupBranch({ group, depth, filter, children }: {
   const canDrop = !!source && source.id !== group.id && source.profileId === group.profileId && source.container === group.container;
   const canDropNodes = canDropTableNodes(selection.draggedNodes, new Set([group.container]));
   useEffect(() => { setDropAfter(null); setDropNodes(false); }, [selection.draggedGroup, selection.draggedNodes]);
+  useEffect(() => {
+    if (group.collapsed && selection.reveal && group.nodeKeys.includes(treeNodeKey(selection.reveal.node)) &&
+      !selection.collapseGroups(false, group.id)) selection.finishReveal(null, undefined, 'Could not expand the table group.');
+  }, [selection.reveal, group.id, group.collapsed, group.nodeKeys]);
   const expanded = !group.collapsed || !!filter;
   return <div role="treeitem" aria-level={depth + 1} aria-expanded={expanded} aria-label={group.name}
     style={{
@@ -640,16 +1024,26 @@ export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profi
     : node.detail === 'default'));
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const rowRef = useRef<HTMLDivElement>(null);
-  const { openTab, newSqlTab, refreshTree, setTablePinned, activeTabId, tabs } = useApp();
+  const { openTab, newSqlTab, refreshTree, setTablePinned, setTableFavorites } = useApp();
   const conn = useApp((s) => s.connections[profileId]);
   const unsaved = useApp((s) => objectHasUnsavedChanges(s.tabs, s.gridDrafts, profileId, node.path, node.kind, s.unsavedStructureTabs));
   const pinnedTables = useApp((s) => s.pinnedTables);
+  const favorites = useApp((s) => s.tableFavorites);
   const pinProfileId = conn?.profileId ?? profileId;
   const isSelected = !node.hasChildren && selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node));
   const draggable = node.kind === 'table' || node.kind === 'view';
   const dragging = selection.draggedNodes?.some((item) => treeNodeKey(item) === treeNodeKey(node));
   const isPinned = !node.hasChildren && pinnedTables.includes(pinnedTableKey(pinProfileId, node));
   const allSelectedPinned = !node.hasChildren && selectedNodes.every((item) => pinnedTables.includes(pinnedTableKey(pinProfileId, item)));
+  const allSelectedFavorite = !node.hasChildren && selectedNodes.every((item) =>
+    favorites.some((favorite) => favorite.kind !== 'folder' && favorite.profileId === pinProfileId && treeNodeKey(favorite) === treeNodeKey(item)));
+
+  useLayoutEffect(() => {
+    const target = selection.reveal?.node;
+    if (!target?.path.name) return;
+    if (node.hasChildren && treeNodeIsAncestor(node, { ...target.path, name: target.path.name })) setOpen(true);
+    else if (!node.hasChildren && treeNodeKey(node) === treeNodeKey(target) && rowRef.current) selection.finishReveal(node, rowRef.current);
+  }, [selection.reveal, node]);
 
   const container = nodePathAsContainer(node);
   const tableContainer = node.kind === 'schema' || (node.kind === 'database' && conn?.capabilities.hierarchy[1] === 'table');
@@ -711,7 +1105,7 @@ export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profi
         onDragStart={(event) => {
           if (!draggable) { event.preventDefault(); return; }
           event.stopPropagation();
-          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.effectAllowed = 'copyMove';
           event.dataTransfer.setData(TABLE_NODES_DRAG_TYPE, tableNodesDragData(selectedNodes));
           setMenu(null);
           if (!isSelected) selection.select(node);
@@ -764,11 +1158,18 @@ export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profi
             node={node.hasChildren ? undefined : node} scope={tableGroupContainer(container)} onClose={() => setMenu(null)} />}
           <MenuItem label="New SQL editor here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
           {!node.hasChildren && (
-            <MenuItem
-              label={allSelectedPinned ? 'Unpin' : 'Pin to top'}
-              onClick={() => (setMenu(null), setTablePinned(pinProfileId, selectedNodes, !allSelectedPinned))}
-            />
+            <>
+              <MenuItem label={allSelectedFavorite ? 'Remove from Bookmarks' : 'Add to Bookmarks'}
+                onClick={() => (setMenu(null), setTableFavorites(pinProfileId, selectedNodes, !allSelectedFavorite))} />
+              <MenuItem label={allSelectedPinned ? 'Unpin' : 'Pin to top'}
+                onClick={() => (setMenu(null), setTablePinned(pinProfileId, selectedNodes, !allSelectedPinned))} />
+            </>
           )}
+          <MenuItem label={multiple && !node.hasChildren ? 'Copy full paths' : 'Copy full path'} onClick={() => {
+            setMenu(null);
+            const paths = node.hasChildren ? [node] : selectedNodes;
+            void navigator.clipboard.writeText(paths.map(treeNodeFullPath).join('\n')).catch((error) => useApp.getState().toast('error', errorInfo(error).message));
+          }} />
           {node.kind === 'database' && conn?.status === 'connected' && !conn.scope && (
             <button type="button" role="menuitem" disabled={isDefaultDatabase} onClick={() => { setMenu(null); void setDefaultDatabase(); }}>
               Set as default

@@ -5,7 +5,7 @@ Electron + React + TypeScript. Version 0.1 (first release scope).
 
 ## Install and update
 
-Download the macOS installer from [GitHub Releases](https://github.com/alkaline1024/earthql/releases) and drag EarthQL to **Applications**. If macOS blocks the first launch, see the [installation steps](RELEASING.md). Use **Help → Check for Updates…** to install new team releases. See the [release guide](RELEASING.md) for preparing and publishing a release.
+Download the macOS installer from [GitHub Releases](https://github.com/alkaline1024/earthql/releases) and drag EarthQL to **Applications**. If macOS blocks the first launch, see the [installation steps](RELEASING.md). Supported builds silently check for updates at launch and every 30 minutes; use the **Update** button when one is available, or **Help → Check for Updates…** to check manually. Download progress is shown as a percentage. See the [release guide](RELEASING.md) for preparing and publishing a release.
 
 ## Run
 
@@ -19,6 +19,8 @@ Requires Node 20+ and macOS 12+. `dist:mac:universal` builds Apple Silicon + Int
 native packages (`@napi-rs/keyring-darwin-x64`, Databricks kernel) installed as well.
 
 For SQL Server, leave Database empty to connect to the login's default database, enter a database, or use **…** to search the databases visible to the login. Azure SQL Database lists databases through `master` and connects to each database separately; database visibility and access depend on the login's permissions.
+
+For Databricks, paste an OAuth M2M JDBC URL (`AuthMech=11;Auth_Flow=1`) into **JDBC URL** to fill the connection fields. Review the settings and save; the client secret is stored in Keychain, not in the profile or the URL field. Other JDBC options and authentication flows are not imported.
 
 ## Move connections between EarthQL and TablePlus
 
@@ -36,6 +38,10 @@ With the grid focused, **Copy Rows** (⌘C) followed by **Paste Rows** (⌘V) st
 
 Click **SQL** at the left of the filter footer to inspect the executed SQL and bound values for the last submitted filters, sort and page. After a filter error, it shows a rebuilt preview of that request instead. Unapplied edits are excluded. Restart the desktop dev app after changing main-process SQL generation; renderer hot reload alone does not update it.
 
+## Bookmarked tables and views
+
+Right-click a table or view and choose **Add to Bookmarks**, or drag one or more selected tables or views from the object tree directly into Bookmarks or a bookmark folder. Opening a bookmark also expands the object tree and selects the original table or view. Bookmarks and the section's open or closed state are saved per connection profile. Use **New Folder** or the Bookmarks context menu to create folders, rename or delete folders, and move bookmarks between folders. Select multiple bookmarks with ⌘-click or ⇧-click to move them together. Drag entries to reorder them or into a folder, and drop a bookmark on the Bookmarks heading to move it back to the top level. Drag the divider above Bookmarks to resize the section. Deleting a folder keeps its bookmarks. Bookmarks can be removed from the section or the context menu. Right-click an object or container and choose **Copy full path** to copy its dot-separated path; multiple selected tables or views are copied one per line.
+
 ## Layout
 
 | Package | Role |
@@ -49,7 +55,8 @@ Click **SQL** at the left of the filter footer to inspect the executed SQL and b
 
 Design rules the code follows:
 
-- Secrets (password, client secret, access token) are stored only in the macOS Keychain (service `EarthQL`, account `<profileId>:<field>`) and are never sent back to the UI. Error messages pass through `redact()`.
+- Secrets (password, client secret, access token) are stored only in the macOS Keychain (service `EarthQL`, account `<profileId>:<field>`) and are never sent back to the UI. Listing or editing profiles does not read them; connecting, testing a connection, or listing databases reads only the needed secret. The form cannot confirm whether an existing secret is saved until a connection is attempted. Error messages pass through `redact()`.
+- EarthQL uses free ad-hoc signing; after an app update macOS may ask for the login Keychain password again when a saved credential is used, even if Always Allow was previously selected.
 - Every user value is bound as a parameter. Only quoted identifiers and explicitly chosen default *expressions* are written into SQL. Insert / Create statements are rebuilt in the main process from the form spec — the UI never sends write SQL.
 - Results keep column order and duplicate names, keep `NULL` distinct from `''`, and keep BIGINT / DECIMAL exact (strings).
 - Cancel is two-step: *requested* when the request is sent, *confirmed* only when the database reports the cancellation error.

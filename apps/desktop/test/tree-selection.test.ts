@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TreeNode } from '@earthql/core';
-import { selectTreeNodes, treeNodeKey } from '../src/renderer/src/tree-selection';
+import { selectTreeNodes, treeNodeIsAncestor, treeNodeKey } from '../src/renderer/src/tree-selection';
 const nodes: TreeNode[] = ['a', 'b', 'c', 'd'].map((name) => ({ kind: 'table', name, path: { database: 'demo', name }, hasChildren: false }));
 const names = (items: TreeNode[]) => items.map((node) => node.name);
 describe('table tree multi selection', () => {
@@ -22,5 +22,13 @@ describe('table tree multi selection', () => {
   it('distinguishes duplicate table names in different schemas and views', () => {
     expect(treeNodeKey({ kind: 'table', path: { schema: 'a', name: 'same' } })).not.toBe(treeNodeKey({ kind: 'table', path: { schema: 'b', name: 'same' } }));
     expect(treeNodeKey(nodes[0])).not.toBe(treeNodeKey({ ...nodes[0], kind: 'view' }));
+  });
+  it('identifies only the catalog, database and schema ancestors of the requested object', () => {
+    const target = { catalog: 'main', database: 'demo', schema: 'sales', name: 'orders' };
+    expect(treeNodeIsAncestor({ kind: 'catalog', name: 'main', path: {}, hasChildren: true }, target)).toBe(true);
+    expect(treeNodeIsAncestor({ kind: 'database', name: 'demo', path: { catalog: 'main' }, hasChildren: true }, target)).toBe(true);
+    expect(treeNodeIsAncestor({ kind: 'schema', name: 'sales', path: { catalog: 'main', database: 'demo' }, hasChildren: true }, target)).toBe(true);
+    expect(treeNodeIsAncestor({ kind: 'schema', name: 'sales', path: { catalog: 'other', database: 'demo' }, hasChildren: true }, target)).toBe(false);
+    expect(treeNodeIsAncestor({ kind: 'table', name: 'orders', path: target, hasChildren: false }, target)).toBe(false);
   });
 });

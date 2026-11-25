@@ -7,7 +7,6 @@ import {
   ctxForObject,
   isReadOnlyStatement,
   makeError,
-  redactInfo,
   runBrowse,
   runGridDeletes,
   runGridUpdates,
@@ -131,7 +130,7 @@ export class SessionManager {
         profile = { ...profile, database: scope.name };
       } else throw makeError('config', 'The selected database or catalog does not match this driver.');
     }
-    const secrets = getSecrets(profileId);
+    const secrets = getSecrets(profileId, secretFieldsFor(profile));
     const missing = secretFieldsFor(profile).filter((f) => !secrets[f]);
     if (missing.length && profile.driver === 'databricks') {
       throw makeError('config', `No ${missing.join(', ')} is saved for this profile. Edit the profile to enter it.`);
@@ -192,7 +191,7 @@ export class SessionManager {
     const l = profileId ? this.live.get(profileId) : undefined;
     if (l) return l.conn.classifyError(e);
     const info = toErrorInfo(e);
-    return profileId ? redactInfo(info, Object.values(getSecrets(profileId))) : info;
+    return info;
   }
 
   // ---------------------------------------------------------------------------

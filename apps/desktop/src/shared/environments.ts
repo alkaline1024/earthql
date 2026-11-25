@@ -5,4 +5,5 @@ export const ENV_PRESETS: readonly EnvironmentTag[] = [
   { name: 'Staging', color: '#d48806' },
   { name: 'Production', color: '#e5484d' },
   { name: 'Local', color: '#6e56cf' },
+  { name: 'Data', color: '#2f6fed' },
 ];

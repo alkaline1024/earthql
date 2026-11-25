@@ -37,8 +37,8 @@ export type IpcResult<T> = { ok: true; value: T } | { ok: false; error: ErrorInf
 
 export interface ProfileSummary {
   profile: ConnectionProfile;
-  /** Which secret fields have a value stored in the Keychain. */
-  storedSecrets: SecretField[];
+  /** null means presence is unknown until the Keychain is accessed. */
+  storedSecrets: SecretField[] | null;
 }
 
 export interface ConnectionImportResult {
@@ -162,7 +162,7 @@ export interface TableImportResult {
   error?: ErrorInfo;
 }
 
-export interface UpdateStatus { available: boolean; busy: boolean; }
+export interface UpdateStatus { available: boolean; busy: boolean; downloadPercent: number | null; }
 
 export interface EarthQLApi {
   updates: {

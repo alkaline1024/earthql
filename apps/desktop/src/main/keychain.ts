@@ -10,21 +10,13 @@ function entry(profileId: string, field: SecretField): Entry {
   return new Entry(SERVICE, `${profileId}:${field}`);
 }
 
-export function getSecrets(profileId: string): Secrets {
+export function getSecrets(profileId: string, fields: SecretField[] = FIELDS): Secrets {
   const out: Secrets = {};
-  for (const f of FIELDS) {
-    try {
-      const v = entry(profileId, f).getPassword();
-      if (v) out[f] = v;
-    } catch {
-      /* not found */
-    }
+  for (const f of fields) {
+    const v = entry(profileId, f).getPassword();
+    if (v) out[f] = v;
   }
   return out;
-}
-
-export function storedFields(profileId: string): SecretField[] {
-  return Object.keys(getSecrets(profileId)) as SecretField[];
 }
 
 export function setSecret(profileId: string, field: SecretField, value: string): void {

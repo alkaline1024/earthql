@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { isEarthQLError, secretFieldsFor, type BrowseRequest, type Cell, type ConnectionProfile, type ErrorInfo, type GridChanges, type GridRowDelete, type GridRowUpdate, type ObjectPath, type ResultColumn, type SecretField, type Secrets } from '@earthql/core';
 import type { IpcResult, ProfileSummary, SavedQuery } from '../shared/api';
-import { deleteAllSecrets, deleteSecret, getSecrets, setSecret, storedFields } from './keychain';
+import { deleteAllSecrets, deleteSecret, getSecrets, setSecret } from './keychain';
 import { SessionManager } from './sessions';
 import { executeTableAction, saveStructure } from './table-actions';
 import { exportTables, readTableImport, importTable, releaseTableImport, cancelTableFileJob } from './table-files';
@@ -32,7 +32,12 @@ export function registerIpc(sessions: SessionManager): void {
   };
 
   // --- profiles -------------------------------------------------------------
-  const summary = (p: ConnectionProfile): ProfileSummary => ({ profile: p, storedSecrets: storedFields(p.id) });
+  const summary = (p: ConnectionProfile): ProfileSummary => ({ profile: p, storedSecrets: null });
+  const draftSecrets = (profile: ConnectionProfile, secrets: Secrets): Secrets => {
+    const fields = secretFieldsFor(profile);
+    const missing = fields.filter((field) => secrets[field] === undefined);
+    return { ...(missing.length ? getSecrets(profile.id, missing) : {}), ...secrets };
+  };
 
   handle('profiles:list', null, () => loadProfiles().map(summary));
   handle('profiles:importTablePlus', null, importConnections);
@@ -57,16 +62,17 @@ export function registerIpc(sessions: SessionManager): void {
     const list = loadProfiles();
     const now = Date.now();
     const idx = list.findIndex((p) => p.id === profile.id);
+    const previous = idx >= 0 ? secretFieldsFor(list[idx]) : [];
     const saved: ConnectionProfile = { ...profile, createdAt: idx >= 0 ? list[idx].createdAt : now, updatedAt: now };
     if (idx >= 0) list[idx] = saved;
     else list.push(saved);
     // Secrets go to the Keychain, never into profiles.json.
-    const wanted = secretFieldsFor(saved as any);
+    const wanted = secretFieldsFor(saved);
     for (const [field, value] of Object.entries(secrets ?? {}) as [SecretField, string][]) {
       if (value !== undefined && wanted.includes(field)) setSecret(saved.id, field, value);
     }
     // Remove secrets that no longer apply (e.g. switching Databricks from token to M2M).
-    for (const f of ['password', 'clientSecret', 'accessToken'] as SecretField[]) if (!wanted.includes(f)) deleteSecret(saved.id, f);
+    for (const f of previous) if (!wanted.includes(f)) deleteSecret(saved.id, f);
     saveProfiles(list);
     return summary(saved);
   });
@@ -79,9 +85,7 @@ export function registerIpc(sessions: SessionManager): void {
   });
 
   handle('profiles:test', null, async (profile: ConnectionProfile, secrets: Secrets) => {
-    const stored = getSecrets(profile.id);
-    const merged: Secrets = { ...stored };
-    for (const [k, v] of Object.entries(secrets ?? {}) as [SecretField, string][]) if (v) merged[k] = v;
+    const merged = draftSecrets(profile, secrets ?? {});
     const conn = sessions.createConnection(profile, merged);
     try {
       return await conn.test();
@@ -94,7 +98,7 @@ export function registerIpc(sessions: SessionManager): void {
 
   handle('profiles:databases', null, async (profile: ConnectionProfile, secrets: Secrets) => {
     if (profile.driver !== 'mssql') throw new Error('Database selection is only available for SQL Server.');
-    const merged = { ...getSecrets(profile.id), ...secrets };
+    const merged = draftSecrets(profile, secrets ?? {});
     const conn = sessions.createConnection(profile, merged);
     try {
       return await conn.listChildren(null);

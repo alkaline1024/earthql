@@ -38,15 +38,57 @@ function blankProfile(driver: DriverId): ConnectionProfile {
   }
 }
 
-export function validateProfile(p: ConnectionProfile, secrets: Secrets, storedSecrets: SecretField[]): string[] {
+export function parseDatabricksJdbc(input: string): { host: string; httpPath: string; schema: string; clientId: string; clientSecret: string; azureTenantId: string } {
+  const [address, ...properties] = input.trim().split(';');
+  if (!/^jdbc:databricks:\/\//i.test(address)) throw new Error('Enter a Databricks JDBC URL.');
+  let url: URL;
+  try {
+    url = new URL(address.replace(/^jdbc:databricks:/i, 'https:'));
+  } catch {
+    throw new Error('Invalid Databricks JDBC hostname or port.');
+  }
+  if (!url.hostname || url.username || url.password || url.search || url.hash || (url.port && url.port !== '443')) {
+    throw new Error('Databricks JDBC URLs must use a hostname and HTTPS port 443.');
+  }
+  let schema: string;
+  try {
+    if (url.pathname.slice(1).includes('/')) throw new Error();
+    schema = decodeURIComponent(url.pathname.slice(1));
+  } catch {
+    throw new Error('Invalid JDBC schema.');
+  }
+  const values = new Map<string, string>();
+  const supported = new Set(['httppath', 'authmech', 'auth_flow', 'oauth2clientid', 'oauth2secret', 'azuretenantid']);
+  for (const property of properties) {
+    if (!property.trim()) continue;
+    const equals = property.indexOf('=');
+    const key = property.slice(0, equals).trim().toLowerCase();
+    if (equals < 0 || !supported.has(key) || values.has(key)) {
+      throw new Error('The JDBC URL contains an unsupported, invalid, or duplicate property.');
+    }
+    values.set(key, property.slice(equals + 1).trim());
+  }
+  if (values.get('authmech') !== '11' || values.get('auth_flow') !== '1') {
+    throw new Error('Only Databricks OAuth M2M JDBC URLs (AuthMech=11, Auth_Flow=1) are supported.');
+  }
+  const httpPath = values.get('httppath') ?? '';
+  const clientId = values.get('oauth2clientid') ?? '';
+  const clientSecret = values.get('oauth2secret') ?? '';
+  if (!httpPath || !clientId || !clientSecret) {
+    throw new Error('The JDBC URL must include httpPath, OAuth2ClientId, and OAuth2Secret.');
+  }
+  return { host: url.hostname, httpPath, schema, clientId, clientSecret, azureTenantId: values.get('azuretenantid') ?? '' };
+}
+
+export function validateProfile(p: ConnectionProfile, secrets: Secrets, storedSecrets: SecretField[] | null): string[] {
   const errs: string[] = [];
   if (!p.name.trim()) errs.push('Name');
   if (!p.host.trim()) errs.push(p.driver === 'databricks' ? 'Server Hostname' : 'Host');
   if (p.driver === 'databricks') {
     if (!p.httpPath.trim()) errs.push('HTTP Path');
     if (p.authMode === 'oauth-m2m' && !p.clientId?.trim()) errs.push('Client ID');
-    if (p.authMode === 'oauth-m2m' && !secrets.clientSecret && !storedSecrets.includes('clientSecret')) errs.push('Client secret');
-    if (p.authMode === 'access-token' && !secrets.accessToken && !storedSecrets.includes('accessToken')) errs.push('Access token');
+    if (p.authMode === 'oauth-m2m' && !secrets.clientSecret && storedSecrets !== null && !storedSecrets.includes('clientSecret')) errs.push('Client secret');
+    if (p.authMode === 'access-token' && !secrets.accessToken && storedSecrets !== null && !storedSecrets.includes('accessToken')) errs.push('Access token');
   } else {
     if (!p.user.trim()) errs.push('Username');
     if (p.driver === 'postgres' && !p.database.trim()) errs.push('Database');
@@ -627,7 +669,7 @@ function ProfileEditor({
   onDuplicate,
 }: {
   initial: ConnectionProfile;
-  storedSecrets: SecretField[];
+  storedSecrets: SecretField[] | null;
   isNew?: boolean;
   connected?: boolean;
   connecting?: boolean;
@@ -651,6 +693,7 @@ function ProfileEditor({
   const [databaseSearch, setDatabaseSearch] = useState('');
   const [databaseLoading, setDatabaseLoading] = useState(false);
   const [databaseError, setDatabaseError] = useState<ErrorInfo | null>(null);
+  const [jdbcMessage, setJdbcMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const databaseRequest = useRef(0);
   const saveButton = useRef<HTMLButtonElement>(null);
   useEffect(() => onMenuCommand((command) => {
@@ -675,6 +718,21 @@ function ProfileEditor({
     }
     return out;
   };
+
+  function pasteJdbc(input: string) {
+    try {
+      const { clientSecret, ...settings } = parseDatabricksJdbc(input);
+      setP((current) => current.driver === 'databricks'
+        ? { ...current, ...settings, catalog: '', authMode: 'oauth-m2m' }
+        : current);
+      setSecrets({ clientSecret });
+      setClearSecret({});
+      setTest(null);
+      setJdbcMessage({ ok: true, text: 'JDBC settings applied. Review and save the connection.' });
+    } catch (e) {
+      setJdbcMessage({ ok: false, text: e instanceof Error ? e.message : 'Invalid Databricks JDBC URL.' });
+    }
+  }
 
   async function runTest() {
     setTesting(true);
@@ -795,6 +853,19 @@ function ProfileEditor({
 
         {p.driver === 'databricks' ? (
           <>
+            <label className="lbl" htmlFor="databricks-jdbc">JDBC URL</label>
+            <input
+              id="databricks-jdbc"
+              className="input mono"
+              type="password"
+              value=""
+              autoComplete="off"
+              placeholder="Paste a Databricks OAuth M2M JDBC URL"
+              onChange={() => {}}
+              onPaste={(e) => { e.preventDefault(); pasteJdbc(e.clipboardData.getData('text')); }}
+            />
+            <span className="help">Paste to fill the connection fields. The URL is not saved; its secret is stored in Keychain when you save.</span>
+            {jdbcMessage && <span className="help" style={jdbcMessage.ok ? undefined : { color: 'var(--danger)' }} role="status">{jdbcMessage.text}</span>}
             <span className="lbl">Server Hostname</span>
             <input className="input mono" value={p.host} placeholder="dbc-a1b2c3d4-e5f6.cloud.databricks.com" onChange={(e) => set('host', e.target.value)} />
             <span className="lbl">HTTP Path</span>
@@ -860,12 +931,13 @@ function ProfileEditor({
           <SecretInput
             key={f}
             label={SECRET_LABEL[f]}
-            stored={storedSecrets.includes(f) && !clearSecret[f]}
+            stored={clearSecret[f] ? false : storedSecrets === null ? null : storedSecrets.includes(f)}
             value={secrets[f] ?? ''}
             onChange={(v) => setSecrets((s) => ({ ...s, [f]: v }))}
             onForget={() => setClearSecret((c) => ({ ...c, [f]: true }))}
           />
         ))}
+        <span className="help">EarthQL uses free ad-hoc signing. After an update, macOS may ask for your login Keychain password again when connecting, even if you previously chose Always Allow.</span>
 
         {p.driver !== 'databricks' && (
           <>
@@ -982,7 +1054,7 @@ function SecretInput({
   onForget,
 }: {
   label: string;
-  stored: boolean;
+  stored: boolean | null;
   value: string;
   onChange: (v: string) => void;
   onForget: () => void;
@@ -996,10 +1068,10 @@ function SecretInput({
           type="password"
           autoComplete="off"
           value={value}
-          placeholder={stored ? '•••••••• saved in Keychain — type to replace' : ''}
+          placeholder={stored === null ? 'Leave blank to use a saved Keychain value, if available' : stored ? '•••••••• saved in Keychain — type to replace' : ''}
           onChange={(e) => onChange(e.target.value)}
         />
-        {stored && !value && (
+        {stored !== false && !value && (
           <button className="btn small ghost" onClick={onForget} title="Remove the saved value from the Keychain when you save">
             Forget
           </button>
