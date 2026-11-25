@@ -123,6 +123,9 @@ function buildMenu(): void {
       submenu: [
         { label: 'Refresh', accelerator: 'CmdOrCtrl+R', click: send('refresh') },
         { type: 'separator' },
+        { label: 'Split Left', accelerator: 'CmdOrCtrl+[', click: send('split-left') },
+        { label: 'Split Right', accelerator: 'CmdOrCtrl+]', click: send('split-right') },
+        { type: 'separator' },
         { role: 'toggleDevTools' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },

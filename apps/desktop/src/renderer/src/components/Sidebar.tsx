@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent } from 'react';
 import type { ErrorInfo, ObjectPath, TreeNode } from '@earthql/core';
 import { api, errorInfo } from '../api';
-import { connectionName, containerKey, noteError, useApp } from '../store';
+import { connectionName, containerKey, noteError, pinnedTableKey, useApp } from '../store';
 import { TableTreeSelection, useTableTreeSelection } from './TableTreeSelection';
 import { treeNodeKey } from '../tree-selection';
 import type { TableAction } from '../../../shared/table-actions';
@@ -254,6 +254,8 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
   const key = containerKey(profileId, parent ? nodePathAsContainer(parent) : {});
   const refresh = useApp((s) => s.treeRefresh[key] ?? 0);
   const scope = useApp((s) => parent ? undefined : s.connections[profileId]?.scope);
+  const pinProfileId = useApp((s) => s.connections[profileId]?.profileId ?? profileId);
+  const pinnedTables = useApp((s) => s.pinnedTables);
   const [nodes, setNodes] = useState<TreeNode[] | null>(null);
   const [error, setError] = useState<ErrorInfo | null>(null);
 
@@ -303,9 +305,12 @@ function TreeChildren({ profileId, parent, depth, filter, onSeparate }: { profil
     );
   }
   const shown = filter ? nodes.filter((n) => n.hasChildren || n.name.toLowerCase().includes(filter)) : nodes;
+  const ordered = pinnedTables.length
+    ? [...shown].sort((a, b) => Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, a))) - Number(!pinnedTables.includes(pinnedTableKey(pinProfileId, b))))
+    : shown;
   return (
     <>
-      {shown.map((n) => (
+      {ordered.map((n) => (
         <TreeItem key={n.kind + n.name} profileId={profileId} node={n} depth={depth} filter={filter} onSeparate={onSeparate} />
       ))}
     </>
@@ -329,10 +334,14 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
     element.style.top = `${Math.max(8, Math.min(menu.y, window.innerHeight - element.offsetHeight - 8))}px`;
     element.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus();
   }, [menu]);
-  const { openTab, newSqlTab, refreshTree, activeTabId, tabs } = useApp();
+  const { openTab, newSqlTab, refreshTree, setTablePinned, activeTabId, tabs } = useApp();
   const conn = useApp((s) => s.connections[profileId]);
   const unsaved = useApp((s) => objectHasUnsavedChanges(s.tabs, s.gridDrafts, profileId, node.path, node.kind));
+  const pinnedTables = useApp((s) => s.pinnedTables);
+  const pinProfileId = conn?.profileId ?? profileId;
   const isSelected = !node.hasChildren && selection.selected.some((item) => treeNodeKey(item) === treeNodeKey(node));
+  const isPinned = !node.hasChildren && pinnedTables.includes(pinnedTableKey(pinProfileId, node));
+  const allSelectedPinned = !node.hasChildren && selectedNodes.every((item) => pinnedTables.includes(pinnedTableKey(pinProfileId, item)));
 
   const container = nodePathAsContainer(node);
   const canCreateHere = conn?.capabilities.createTable && (node.kind === 'schema' || (node.kind === 'database' && conn.capabilities.hierarchy[1] === 'table'));
@@ -397,6 +406,7 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
         <span className={`chev${open ? ' open' : ''}`}>{node.hasChildren ? '▶' : ''}</span>
         <span className="ico">{ICON[node.kind]}</span>
         <span className="name">{node.name}</span>
+        {isPinned && <span className="pin-ico" role="img" aria-label="Pinned" title="Pinned to top">📌</span>}
         {node.detail && <span className="detail">{node.detail}</span>}
         {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
       </div>
@@ -426,6 +436,12 @@ function TreeItem({ profileId, node, depth, filter, onSeparate }: { profileId: s
             </>
           )}
           <MenuItem label="New SQL editor here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
+          {!node.hasChildren && (
+            <MenuItem
+              label={allSelectedPinned ? 'Unpin' : 'Pin to top'}
+              onClick={() => (setMenu(null), setTablePinned(pinProfileId, selectedNodes, !allSelectedPinned))}
+            />
+          )}
           {onSeparate && (node.kind === 'database' || node.kind === 'catalog') && (
             <MenuItem label="Open in Separate Connection…" onClick={() => { setMenu(null); onSeparate(node.name); }} />
           )}

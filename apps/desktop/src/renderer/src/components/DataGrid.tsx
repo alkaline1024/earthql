@@ -54,16 +54,42 @@ export function DataGrid({
   const wrap = useRef<HTMLDivElement>(null);
   const colKey = columns.map((c) => c.name + ':' + c.type).join('|');
   const [widths, setWidths] = useState<number[]>(() => initialWidths(columns, rows));
+  // `anchor` is where a selection started (mousedown / plain click); `sel` is the "focus" cell —
+  // the one arrow-keys/Enter/double-click act on, same as the single-cell selection always was.
+  // anchor === sel is a single cell; otherwise they bound a drag/shift-extended rectangle.
+  const [anchor, setAnchor] = useState<{ r: number; c: number } | null>(null);
   const [sel, setSel] = useState<{ r: number; c: number } | null>(null);
   const [viewer, setViewer] = useState<{ col: ResultColumn; value: Cell } | null>(null);
   const [editor, setEditor] = useState<{ r: number; c: number; initial: string | null } | null>(null);
+  const dragging = useRef(false);
 
   useEffect(() => {
     setWidths(initialWidths(columns, rows));
+    setAnchor(null);
     setSel(null);
     setEditor(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colKey]);
+
+  function beginSelect(r: number, c: number, extend: boolean) {
+    if (!extend || !anchor) setAnchor({ r, c });
+    setSel({ r, c });
+    dragging.current = true;
+    const up = () => {
+      dragging.current = false;
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mouseup', up);
+  }
+
+  function extendSelect(r: number, c: number) {
+    if (dragging.current) setSel({ r, c });
+  }
+
+  const rangeBounds = anchor && sel
+    ? { r1: Math.min(anchor.r, sel.r), r2: Math.max(anchor.r, sel.r), c1: Math.min(anchor.c, sel.c), c2: Math.max(anchor.c, sel.c) }
+    : null;
+  const inRange = (r: number, c: number) => !!rangeBounds && r >= rangeBounds.r1 && r <= rangeBounds.r2 && c >= rangeBounds.c1 && c <= rangeBounds.c2;
 
   const rowNumW = Math.max(44, String(rowOffset + rows.length).length * 8 + 18);
   const total = rowNumW + widths.reduce((a, b) => a + b, 0);
@@ -101,7 +127,17 @@ export function DataGrid({
       const sc = window.getSelection()?.toString();
       if (sc) return; // let the browser copy a text selection
       e.preventDefault();
-      void navigator.clipboard.writeText(cellToText(rows[sel.r]?.[sel.c] ?? null, 'NULL'));
+      if (rangeBounds && (rangeBounds.r1 !== rangeBounds.r2 || rangeBounds.c1 !== rangeBounds.c2)) {
+        const lines: string[] = [];
+        for (let r = rangeBounds.r1; r <= rangeBounds.r2; r++) {
+          const line: string[] = [];
+          for (let c = rangeBounds.c1; c <= rangeBounds.c2; c++) line.push(cellToText(rows[r]?.[c] ?? null, 'NULL'));
+          lines.push(line.join('\t'));
+        }
+        void navigator.clipboard.writeText(lines.join('\n'));
+      } else {
+        void navigator.clipboard.writeText(cellToText(rows[sel.r]?.[sel.c] ?? null, 'NULL'));
+      }
       return;
     }
     const moves: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
@@ -111,6 +147,7 @@ export function DataGrid({
       const r = Math.max(0, Math.min(rows.length - 1, sel.r + m[0]));
       const c = Math.max(0, Math.min(columns.length - 1, sel.c + m[1]));
       setSel({ r, c });
+      if (!e.shiftKey) setAnchor({ r, c });
       v.scrollToIndex(r);
     }
     if ((e.key === 'Enter' || e.key === 'F2') && rows[sel.r]) {
@@ -159,9 +196,10 @@ export function DataGrid({
                 {columns.map((col, ci) => (
                   <div
                     key={ci}
-                    className={`gcell${col.kind === 'number' ? ' num' : ''}${sel?.r === vr.index && sel?.c === ci ? ' sel' : ''}${editing?.changed(vr.index, ci) ? ' draft-cell' : ''}`}
+                    className={`gcell${col.kind === 'number' ? ' num' : ''}${sel?.r === vr.index && sel?.c === ci ? ' sel' : inRange(vr.index, ci) ? ' range' : ''}${editing?.changed(vr.index, ci) ? ' draft-cell' : ''}`}
                     style={{ width: widths[ci] }}
-                    onMouseDown={() => setSel({ r: vr.index, c: ci })}
+                    onMouseDown={(event) => beginSelect(vr.index, ci, event.shiftKey)}
+                    onMouseEnter={(event) => { if (event.buttons === 1) extendSelect(vr.index, ci); }}
                     onDoubleClick={() => openCell(vr.index, ci)}
                   >
                     {editor?.r === vr.index && editor.c === ci && editing?.canEdit(vr.index, ci) ? (

@@ -35,6 +35,7 @@ export function TabBar() {
   const {
     tabs, activeTabId, activeProfileId, activateTab, closeTab, closeTabs, newSqlTab, refreshTab, renameTab,
     tabGroups, moveTab, moveTabsToGroup, createTabGroup, renameTabGroup, setTabGroupColor, toggleTabGroupCollapsed, removeTabGroup,
+    openSplit,
   } = useApp();
   const gridDrafts = useApp((s) => s.gridDrafts);
   const [menu, setMenu] = useState<TabMenu | null>(null);
@@ -318,6 +319,9 @@ export function TabBar() {
                 <div className="conn-menu-separator" role="separator" />
                 <button type="button" role="menuitem" onClick={() => invoke(() => openGroupEditor({ name: '', color: TAB_GROUP_COLORS[0], ids: [target.id] }))}>New Group…</button>
               </ContextSubmenu>
+              <div className="conn-menu-separator" role="separator" />
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'left'))}><span>Split Left</span><kbd>⌘[</kbd></button>
+              <button type="button" role="menuitem" onClick={() => invoke(() => openSplit(target.id, 'right'))}><span>Split Right</span><kbd>⌘]</kbd></button>
               <div className="conn-menu-separator" role="separator" />
               <button type="button" role="menuitem" onClick={() => invoke(() => closeTab(target.id))}><span>Close Tab</span><kbd>⌘W</kbd></button>
               <button type="button" role="menuitem" disabled={tabs.length < 2} onClick={() => invoke(() => closeTabs(tabs.filter((tab) => tab.id !== target.id).map((tab) => tab.id), target.id))}>

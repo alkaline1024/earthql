@@ -1,8 +1,9 @@
 import { create } from 'zustand';
-import type { ErrorInfo, ExecContext, GridRowUpdate, ObjectKind, ObjectPath } from '@earthql/core';
+import type { ErrorInfo, ExecContext, GridRowUpdate, ObjectKind, ObjectPath, TreeNode } from '@earthql/core';
 import type { OpenConnection, ProfileSummary } from '../../shared/api';
 import { api, errorInfo, uid } from './api';
 import { assignTabGroup, type TabGroup } from './tab-groups';
+import { treeNodeKey } from './tree-selection';
 
 export interface LiveConnection extends OpenConnection {
   /** 'lost' after a network error; the user can reconnect. */
@@ -25,6 +26,11 @@ export const LIMITS = [100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
 
 export type Theme = 'system' | 'light' | 'dark' | 'white' | 'slate' | 'sepia';
 
+export interface SplitPane {
+  tabId: string;
+  side: 'left' | 'right';
+}
+
 export interface Toast {
   id: string;
   kind: 'ok' | 'error' | 'info';
@@ -46,10 +52,17 @@ interface AppState {
   screen: 'connections' | 'workspace';
   tabs: Tab[];
   activeTabId: string | null;
+  /** A tab pinned to a side pane; the main tab strip keeps switching freely. At most one at a time. */
+  splitPane: SplitPane | null;
+  openSplit(tabId: string, side: SplitPane['side']): void;
+  closeSplit(): void;
   tabGroups: TabGroup[];
   gridDrafts: Record<string, GridDraft>;
   /** Bumped to make the sidebar reload a container node: key = profileId + path */
   treeRefresh: Record<string, number>;
+  /** Tables/views pinned to the top of their sidebar list (persisted). Keys from pinnedTableKey(). */
+  pinnedTables: string[];
+  setTablePinned(profileId: string, nodes: TreeNode[], pinned: boolean): void;
   toasts: Toast[];
   sqlCounter: number;
   /** Which action the SQL toolbar's Run button performs by default (persisted, app-wide). */
@@ -99,6 +112,18 @@ interface AppState {
 
 export const containerKey = (profileId: string, p: Partial<ObjectPath>) =>
   `${profileId}|${p.catalog ?? ''}|${p.database ?? ''}|${p.schema ?? ''}`;
+
+export const pinnedTableKey = (profileId: string, node: Pick<TreeNode, 'kind' | 'path'>) =>
+  `${profileId}|${treeNodeKey(node)}`;
+
+function loadPinnedTables(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem('earthql.pinnedTables') ?? '[]');
+    return Array.isArray(raw) && raw.every((item) => typeof item === 'string') ? raw : [];
+  } catch {
+    return [];
+  }
+}
 
 function loadSqlRunDefault(): 'current' | 'all' {
   try {
@@ -193,6 +218,7 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
     activeProfileId: state.activeProfileId && !closing.has(state.activeProfileId) ? state.activeProfileId : (active?.profileId ?? remaining[0] ?? null),
     screen: remaining.length ? state.screen : 'connections',
     tabGroups: active ? expandGroupOf(tabGroups, active.id) : tabGroups,
+    splitPane: state.splitPane && removedTabIds.includes(state.splitPane.tabId) ? null : state.splitPane,
   };
 }
 
@@ -208,9 +234,31 @@ export const useApp = create<AppState>((set, get) => ({
   screen: 'connections',
   tabs: [],
   activeTabId: null,
+  splitPane: null,
+  openSplit(tabId, side) {
+    set((s) => ({ splitPane: s.splitPane?.tabId === tabId && s.splitPane.side === side ? null : { tabId, side } }));
+  },
+  closeSplit() {
+    set({ splitPane: null });
+  },
   tabGroups: [],
   gridDrafts: {},
   treeRefresh: {},
+  pinnedTables: loadPinnedTables(),
+  setTablePinned(profileId, nodes, pinned) {
+    const keys = nodes.map((node) => pinnedTableKey(profileId, node));
+    set((s) => {
+      const next = pinned
+        ? [...new Set([...s.pinnedTables, ...keys])]
+        : s.pinnedTables.filter((key) => !keys.includes(key));
+      try {
+        localStorage.setItem('earthql.pinnedTables', JSON.stringify(next));
+      } catch {
+        get().toast('error', 'Pinned tables could not be saved.');
+      }
+      return { pinnedTables: next };
+    });
+  },
   toasts: [],
   sqlCounter: 0,
   sqlRunDefault: loadSqlRunDefault(),
@@ -405,6 +453,7 @@ export const useApp = create<AppState>((set, get) => ({
       ...(active && active.id !== current.activeTabId ? { activeProfileId: active.profileId } : {}),
       gridDrafts: Object.fromEntries(Object.entries(current.gridDrafts).filter(([id]) => !closing.has(id))),
       tabGroups: active ? expandGroupOf(tabGroups, active.id) : tabGroups,
+      splitPane: current.splitPane && closing.has(current.splitPane.tabId) ? null : current.splitPane,
     });
   },
 

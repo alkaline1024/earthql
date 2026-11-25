@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, onMenuCommand } from '../api';
-import { connectionName, useApp } from '../store';
+import { connectionName, useApp, type Tab } from '../store';
 import { ConnectionsScreen } from './ConnectionsScreen';
 import { CreateTableTab } from './CreateTableTab';
 import { Sidebar } from './Sidebar';
@@ -24,14 +24,52 @@ function GearIcon() {
   );
 }
 
+function renderTabContent(t: Tab, active: boolean) {
+  return (
+    <ErrorBoundary label="this tab">
+      {t.kind === 'table' && (
+        <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} active={active} refreshVersion={t.refreshVersion} />
+      )}
+      {t.kind === 'sql' && <SqlTab profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={active} refreshVersion={t.refreshVersion} />}
+      {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} refreshVersion={t.refreshVersion} />}
+    </ErrorBoundary>
+  );
+}
+
+function tabTitle(t: Tab) {
+  if (t.customTitle) return t.customTitle;
+  if (t.kind === 'table') return t.object.name;
+  return t.kind === 'sql' ? t.title : 'New table';
+}
+
 export function App() {
   const { screen, tabs, activeTabId, activeProfileId, newSqlTab, setScreen, loadProfiles, toasts } = useApp();
   const { discardPrompt, resolveDiscard } = useApp();
+  const { splitPane, closeSplit } = useApp();
   const profiles = useApp((s) => s.profiles);
   const [newRequested, setNewRequested] = useState(0);
   const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [splitWidth, setSplitWidth] = useState<number | null>(null);
+  const splitTab = splitPane ? tabs.find((t) => t.id === splitPane.tabId) : undefined;
+  const mainSplitRef = useRef<HTMLDivElement>(null);
   const feedbackOpen = useRef(false);
+
+  function startSplitResize(e: React.MouseEvent) {
+    const rect = mainSplitRef.current!.getBoundingClientRect();
+    const fromRight = splitPane?.side === 'right';
+    const move = (ev: MouseEvent) => {
+      const w = fromRight ? rect.right - ev.clientX : ev.clientX - rect.left;
+      setSplitWidth(Math.max(200, Math.min(w, rect.width - 200)));
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+    };
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+    e.preventDefault();
+  }
 
   const openFeedback = useCallback(() => {
     if (feedbackOpen.current) return;
@@ -70,6 +108,8 @@ export function App() {
         if (cmd === 'close-tab' && s.activeTabId && s.screen === 'workspace') s.closeTab(s.activeTabId);
         if (cmd === 'close-all-tabs' && s.screen === 'workspace') s.closeTabs(s.tabs.map(({ id }) => id));
         if (cmd === 'refresh' && s.activeTabId && s.screen === 'workspace') s.refreshTab(s.activeTabId);
+        if (cmd === 'split-left' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'left');
+        if (cmd === 'split-right' && s.activeTabId && s.screen === 'workspace') s.openSplit(s.activeTabId, 'right');
       }),
     [openFeedback],
   );
@@ -85,35 +125,55 @@ export function App() {
           <Sidebar />
           <main className="main">
             <TabBar />
-            <div className="tab-content">
-              {tabs.length === 0 && (
-                <div className="welcome" style={{ height: '100%' }}>
-                  <h2>{activeProfileId ? connectionName(activeProfileId) : 'EarthQL'}</h2>
-                  <p>Pick a table or view in the sidebar, or open a SQL editor.</p>
-                  <div className="row">
-                    {activeProfileId && (
-                      <button className="btn primary" onClick={() => newSqlTab(activeProfileId)}>
-                        New SQL editor
-                      </button>
-                    )}
-                    <button className="btn" onClick={() => setScreen('connections')}>
-                      Connections
-                    </button>
+            <div className={`main-split${splitPane ? ' has-split' : ''}`} ref={mainSplitRef}>
+              {splitPane && splitTab && splitPane.side === 'left' && (
+                <>
+                  <div className="split-pane" style={{ width: splitWidth ?? undefined }}>
+                    <div className="split-pane-head">
+                      <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tabTitle(splitTab)}</span>
+                      <button type="button" className="btn ghost icon" aria-label="Close split" title="Close split" onClick={closeSplit}>✕</button>
+                    </div>
+                    <div className="tab-content"><div className="tab-pane">{renderTabContent(splitTab, false)}</div></div>
                   </div>
-                  <p className="muted small">Right-click a schema or database to create a table.</p>
-                </div>
+                  <div className="split-divider" onMouseDown={startSplitResize} />
+                </>
               )}
-              {tabs.map((t) => (
-                <div key={t.id} className="tab-pane" hidden={t.id !== activeTabId}>
-                  <ErrorBoundary label="this tab">
-                  {t.kind === 'table' && (
-                    <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} active={t.id === activeTabId} refreshVersion={t.refreshVersion} />
-                  )}
-                  {t.kind === 'sql' && <SqlTab profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={t.id === activeTabId} refreshVersion={t.refreshVersion} />}
-                  {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} refreshVersion={t.refreshVersion} />}
-                  </ErrorBoundary>
-                </div>
-              ))}
+              <div className="tab-content" style={splitPane ? { flex: 1, minWidth: 0 } : undefined}>
+                {tabs.length === 0 && (
+                  <div className="welcome" style={{ height: '100%' }}>
+                    <h2>{activeProfileId ? connectionName(activeProfileId) : 'EarthQL'}</h2>
+                    <p>Pick a table or view in the sidebar, or open a SQL editor.</p>
+                    <div className="row">
+                      {activeProfileId && (
+                        <button className="btn primary" onClick={() => newSqlTab(activeProfileId)}>
+                          New SQL editor
+                        </button>
+                      )}
+                      <button className="btn" onClick={() => setScreen('connections')}>
+                        Connections
+                      </button>
+                    </div>
+                    <p className="muted small">Right-click a schema or database to create a table.</p>
+                  </div>
+                )}
+                {tabs.map((t) => (
+                  <div key={t.id} className="tab-pane" hidden={t.id !== activeTabId}>
+                    {renderTabContent(t, t.id === activeTabId)}
+                  </div>
+                ))}
+              </div>
+              {splitPane && splitTab && splitPane.side === 'right' && (
+                <>
+                  <div className="split-divider" onMouseDown={startSplitResize} />
+                  <div className="split-pane" style={{ width: splitWidth ?? undefined }}>
+                    <div className="split-pane-head">
+                      <span className="grow" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tabTitle(splitTab)}</span>
+                      <button type="button" className="btn ghost icon" aria-label="Close split" title="Close split" onClick={closeSplit}>✕</button>
+                    </div>
+                    <div className="tab-content"><div className="tab-pane">{renderTabContent(splitTab, false)}</div></div>
+                  </div>
+                </>
+              )}
             </div>
           </main>
         </>
