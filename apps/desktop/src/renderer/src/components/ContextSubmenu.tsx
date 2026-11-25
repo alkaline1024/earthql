@@ -9,7 +9,7 @@ export function ContextSubmenu({ label, disabled, children }: { label: string; d
   useLayoutEffect(() => {
     if (!open || !trigger.current || !submenu.current) return;
     const row = trigger.current.getBoundingClientRect();
-    const parent = trigger.current.closest('.conn-context-menu')!.getBoundingClientRect();
+    const parent = trigger.current.closest('[role="menu"]')!.getBoundingClientRect();
     const width = submenu.current.offsetWidth;
     const height = submenu.current.offsetHeight;
     setPosition({ left: Math.max(8, parent.right + width <= window.innerWidth - 8 ? parent.right - 2 : parent.left - width + 2), top: Math.max(8, Math.min(row.top - 5, window.innerHeight - height - 8)) });

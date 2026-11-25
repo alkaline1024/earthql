@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { ErrorInfo, ExecContext, GridRowUpdate, ObjectKind, ObjectPath } from '@earthql/core';
 import type { OpenConnection, ProfileSummary } from '../../shared/api';
 import { api, errorInfo, uid } from './api';
+import { assignTabGroup, type TabGroup } from './tab-groups';
 
 export interface LiveConnection extends OpenConnection {
   /** 'lost' after a network error; the user can reconnect. */
@@ -38,6 +39,7 @@ interface AppState {
   screen: 'connections' | 'workspace';
   tabs: Tab[];
   activeTabId: string | null;
+  tabGroups: TabGroup[];
   gridDrafts: Record<string, GridDraft>;
   /** Bumped to make the sidebar reload a container node: key = profileId + path */
   treeRefresh: Record<string, number>;
@@ -63,6 +65,13 @@ interface AppState {
   renameTab(id: string, title: string): void;
   refreshTab(id: string): void;
   activateTab(id: string): void;
+  moveTab(sourceId: string | string[], targetId: string, after: boolean): void;
+  moveTabsToGroup(ids: string[], groupId: string | null): void;
+  createTabGroup(name: string, tabIds: string[], color: string): string;
+  renameTabGroup(id: string, name: string): void;
+  setTabGroupColor(id: string, color: string): void;
+  toggleTabGroupCollapsed(id: string): void;
+  removeTabGroup(id: string): void;
   setGridDraft(id: string, draft: GridDraft | undefined): void;
   newSqlTab(profileId: string, sql?: string, context?: ExecContext, title?: string): string;
   refreshTree(profileId: string, container: Partial<ObjectPath>): void;
@@ -91,12 +100,24 @@ async function canDisconnect(state: AppState, sessionIds: string[]) {
   return !drafts.length || await state.confirmDiscard();
 }
 
+/** Clears `collapsed` on the group containing `tabId`, if any, so activating a tab never leaves it hidden. */
+function expandGroupOf(groups: TabGroup[], tabId: string): TabGroup[] {
+  return groups.map((group) => group.collapsed && group.tabIds.includes(tabId) ? { ...group, collapsed: false } : group);
+}
+
+/** Removes the given tab ids from every group and drops any group left with none. */
+function withoutTabs(groups: TabGroup[], removedIds: string[]): TabGroup[] {
+  return assignTabGroup(groups, removedIds, null).filter((group) => group.tabIds.length > 0);
+}
+
 function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> {
   const closing = new Set(sessionIds);
   const connections = Object.fromEntries(Object.entries(state.connections).filter(([id]) => !closing.has(id)));
   const remaining = Object.keys(connections);
+  const removedTabIds = state.tabs.filter((tab) => closing.has(tab.profileId)).map((tab) => tab.id);
   const tabs = state.tabs.filter((tab) => !closing.has(tab.profileId));
   const active = tabs.find((tab) => tab.id === state.activeTabId) ?? tabs.at(-1);
+  const tabGroups = withoutTabs(state.tabGroups, removedTabIds);
   return {
     connections,
     tabs,
@@ -105,6 +126,7 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
     activeTabId: active?.id ?? null,
     activeProfileId: state.activeProfileId && !closing.has(state.activeProfileId) ? state.activeProfileId : (active?.profileId ?? remaining[0] ?? null),
     screen: remaining.length ? state.screen : 'connections',
+    tabGroups: active ? expandGroupOf(tabGroups, active.id) : tabGroups,
   };
 }
 
@@ -117,6 +139,7 @@ export const useApp = create<AppState>((set, get) => ({
   screen: 'connections',
   tabs: [],
   activeTabId: null,
+  tabGroups: [],
   gridDrafts: {},
   treeRefresh: {},
   toasts: [],
@@ -227,6 +250,7 @@ export const useApp = create<AppState>((set, get) => ({
           activeProfileId: tab.profileId,
           screen: 'workspace',
           tabs: tab.initialView === undefined ? s.tabs : s.tabs.map((current) => current.id === existing.id ? { ...current, initialView: tab.initialView } as Tab : current),
+          tabGroups: expandGroupOf(s.tabGroups, existing.id),
         });
         return existing.id;
       }
@@ -260,11 +284,13 @@ export const useApp = create<AppState>((set, get) => ({
     const active = tabs.find((tab) => tab.id === (keepId ?? current.activeTabId))
       ?? current.tabs.slice(Math.max(0, activeIndex)).find((tab) => !closing.has(tab.id))
       ?? tabs.at(-1);
+    const tabGroups = withoutTabs(current.tabGroups, ids);
     set({
       tabs,
       activeTabId: active?.id ?? null,
       ...(active && active.id !== current.activeTabId ? { activeProfileId: active.profileId } : {}),
       gridDrafts: Object.fromEntries(Object.entries(current.gridDrafts).filter(([id]) => !closing.has(id))),
+      tabGroups: active ? expandGroupOf(tabGroups, active.id) : tabGroups,
     });
   },
 
@@ -282,7 +308,53 @@ export const useApp = create<AppState>((set, get) => ({
 
   activateTab(id) {
     const t = get().tabs.find((x) => x.id === id);
-    set({ activeTabId: id, ...(t ? { activeProfileId: t.profileId } : {}) });
+    set((s) => ({ activeTabId: id, ...(t ? { activeProfileId: t.profileId } : {}), tabGroups: expandGroupOf(s.tabGroups, id) }));
+  },
+
+  moveTab(sourceId, targetId, after) {
+    const tabs = [...get().tabs];
+    const sourceIds = new Set(typeof sourceId === 'string' ? [sourceId] : sourceId);
+    if (sourceIds.has(targetId) || !tabs.some((tab) => tab.id === targetId)) return;
+    const moved = tabs.filter((tab) => sourceIds.has(tab.id));
+    if (!moved.length) return;
+    const remaining = tabs.filter((tab) => !sourceIds.has(tab.id));
+    const target = remaining.findIndex((tab) => tab.id === targetId);
+    remaining.splice(target + (after ? 1 : 0), 0, ...moved);
+    set({ tabs: remaining });
+  },
+
+  moveTabsToGroup(ids, groupId) {
+    const tabGroups = assignTabGroup(get().tabGroups, ids, groupId);
+    set({ tabGroups });
+    if (groupId === null) return;
+    const group = tabGroups.find((g) => g.id === groupId);
+    const lastOther = group?.tabIds.filter((id) => !ids.includes(id)).at(-1);
+    if (lastOther) get().moveTab(ids, lastOther, true);
+  },
+
+  createTabGroup(name, tabIds, color) {
+    const id = uid();
+    set((s) => ({ tabGroups: [...s.tabGroups, { id, name, color, tabIds: [], collapsed: false }] }));
+    get().moveTabsToGroup(tabIds, id);
+    return id;
+  },
+
+  renameTabGroup(id, name) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    set((s) => ({ tabGroups: s.tabGroups.map((g) => g.id === id ? { ...g, name: trimmed } : g) }));
+  },
+
+  setTabGroupColor(id, color) {
+    set((s) => ({ tabGroups: s.tabGroups.map((g) => g.id === id ? { ...g, color } : g) }));
+  },
+
+  toggleTabGroupCollapsed(id) {
+    set((s) => ({ tabGroups: s.tabGroups.map((g) => g.id === id ? { ...g, collapsed: !g.collapsed } : g) }));
+  },
+
+  removeTabGroup(id) {
+    set((s) => ({ tabGroups: s.tabGroups.filter((g) => g.id !== id) }));
   },
 
   setGridDraft(id, draft) {
