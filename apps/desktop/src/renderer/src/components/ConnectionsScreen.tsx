@@ -179,6 +179,18 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
   const [isNew, setIsNew] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
+  const [quickStartOpen, setQuickStartOpen] = useState(() => {
+    if (initialNew || initialProfileId) return false;
+    try { return localStorage.getItem('earthql.quickStartSeen') !== 'true'; }
+    catch { return false; }
+  });
+
+  function dismissQuickStart() {
+    setQuickStartOpen(false);
+    try { localStorage.setItem('earthql.quickStartSeen', 'true'); }
+    catch { /* The guide can still be dismissed in this session. */ }
+  }
+
   const [transfer, setTransfer] = useState<'import' | 'export' | null>(null);
 
   useEffect(() => {
@@ -289,6 +301,8 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
           </button>
         </div>
         <div className="row" style={{ padding: '0 14px 8px' }}>
+          <button type="button" className="btn small ghost" onClick={() => setQuickStartOpen(true)}>Quick Start</button>
+          <span className="spacer" />
           <button className="btn small" title="Import a TablePlus connection file" onClick={() => setTransfer('import')}>Import…</button>
           <button className="btn small" title="Export connections to TablePlus" disabled={!exportable} onClick={() => beginExport(null)}>Export…</button>
         </div>
@@ -480,6 +494,37 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
           <button role="menuitem" onClick={() => { setMenu(null); setSelectedIds(profiles.map(({ profile }) => profile.id)); listRef.current?.focus(); }}>Select all</button>
           <button role="menuitem" disabled={!selectedIds.length} className="destructive" onClick={() => { setMenu(null); setDeleteIds([...selectedIds]); }}>Delete{selectedIds.length > 1 ? ` ${selectedIds.length} connections` : ' connection'}…</button>
         </div>, document.body)}
+      {quickStartOpen && <Modal narrow title="Quick Start" onClose={dismissQuickStart} footer={
+        <button type="button" className="btn small" onClick={dismissQuickStart}>Skip</button>
+      }>
+        <div className="col">
+          <p className="muted" style={{ margin: 0 }}>Bring your connections into EarthQL and open them side by side.</p>
+          <div className="col">
+            <b>Bring your TablePlus connections</b>
+            <span>Have a TablePlus connection file? Import it to get started.</span>
+            <div><button type="button" className="btn" onClick={() => {
+              dismissQuickStart();
+              setTransfer('import');
+            }}>Import from TablePlus…</button></div>
+          </div>
+          <div className="col">
+            <b>Add a connection</b>
+            <span>For Databricks, have your Server Hostname, HTTP Path and access token or OAuth credentials ready.</span>
+            <div className="row">
+              <button type="button" className="btn" onClick={() => { dismissQuickStart(); startNew(); }}>New Connection</button>
+              <button type="button" className="btn primary" onClick={() => {
+                dismissQuickStart();
+                startNew();
+                setDraft(blankProfile('databricks'));
+              }}>Add Databricks</button>
+            </div>
+          </div>
+          <div className="col">
+            <b>Work across connections</b>
+            <span>Open another connection from Connections. In the Workspace, use ⌘T to open a SQL Query and drag a tab to the left, right or bottom edge to split the view.</span>
+          </div>
+        </div>
+      </Modal>}
       {groupEditor && <Modal narrow title={groupEditor.id ? 'Rename group' : 'New group'} onClose={() => setGroupEditor(null)}>
         <form onSubmit={saveGroup} style={{ display: 'grid', gap: 12 }}>
           <label>Group name<input className="input" style={{ width: '100%', marginTop: 6 }} autoFocus value={groupEditor.name} onChange={(e) => setGroupEditor({ ...groupEditor, name: e.target.value })} /></label>
