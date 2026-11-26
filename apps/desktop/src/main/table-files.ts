@@ -8,7 +8,7 @@ import { finished, pipeline } from 'node:stream/promises';
 import { createGzip, gunzipSync } from 'node:zlib';
 import archiver from 'archiver';
 import ExcelJS from 'exceljs';
-import { cellToText, ctxForObject, describePath, makeError, splitStatements, isBinaryCell, type Cell, type InsertSpec, type ObjectPath, type QueryCursor, type ResultColumn } from '@earthql/core';
+import { cellToText, ctxForObject, describePath, makeError, splitStatements, isBinaryCell, type Cell, type DriverConnection, type InsertSpec, type ObjectPath, type QueryCursor, type ResultColumn } from '@earthql/core';
 import type { ExportResult, TableExportItem, TableExportOptions, TableImportFormat, TableImportPreview, TableImportResult } from '../shared/api';
 import type { SessionManager } from './sessions';
 import { csvRecord, insertStatementLine, jsonRecord, parseImport, safeFileName, structureSql } from './table-file-formats';
@@ -23,6 +23,7 @@ interface ImportPlan {
   rows: (string | null)[][];
   sql?: string;
   expires: number;
+  cancelled?: boolean;
 }
 const plans = new Map<string, ImportPlan>();
 function windowForDialog() { return BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]; }
@@ -37,7 +38,31 @@ async function write(out: fs.WriteStream, text: string) {
 }
 async function end(out: fs.WriteStream) { out.end(); await finished(out); }
 
+/** Best-effort COUNT(*) of every exported table so progress can show rows/total. */
+async function countExportRows(conn: DriverConnection, items: TableExportItem[], job: { cancelled: boolean; cursor?: QueryCursor }): Promise<number | undefined> {
+  const count = conn.driver === 'mssql' ? 'COUNT_BIG(*)' : 'COUNT(*)';
+  let total = 0;
+  for (const item of items) {
+    if (!item.data) continue;
+    if (job.cancelled) return undefined;
+    const cursor = conn.openCursor({ sql: `SELECT ${count} AS total_rows FROM ${conn.dialect.qualify(item.object)}` }, ctxForObject(item.object));
+    job.cursor = cursor;
+    try {
+      const chunk = await cursor.fetch(1);
+      const value = String(chunk.rows[0]?.[0] ?? '');
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) return undefined;
+      total += Number(value);
+    } catch {
+      // A failed count must never block the export; the progress bar just stays indeterminate.
+      return undefined;
+    } finally { await cursor.close().catch(() => undefined); job.cursor = undefined; }
+  }
+  return total;
+}
+
 export function cancelTableFileJob(id: string, sessions: SessionManager): void {
+  const plan = plans.get(id);
+  if (plan) plan.cancelled = true;
   const job = jobs.get(id);
   if (job) { job.cancelled = true; void job.cursor?.cancel(); if (job.runId) void sessions.cancel(job.runId); }
 }
@@ -62,11 +87,15 @@ export async function exportTables(sessions: SessionManager, exportId: string, p
   const base = safeFileName(options.suggestedName.replace(/\.(csv|json|sql|xlsx|zip)(\.gz)?$/i, ''));
   let folder: string | undefined;
   let rows = 0;
+  let total: number | undefined;
   const outputs: fs.WriteStream[] = [];
-  const progress = () => windowForDialog()?.webContents.send('export:progress', { exportId, rows, done: false });
+  const progress = (done = false) => windowForDialog()?.webContents.send('export:progress', { exportId, rows, total, done });
   try {
     const chosen = await dialog.showSaveDialog(windowForDialog(), { title: 'Export tables', defaultPath: path.join(os.homedir(), 'Downloads', `${base}.${ext}`), filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
     if (chosen.canceled || !chosen.filePath) return { status: 'dialog-cancelled' };
+    if (job.cancelled) return { status: 'cancelled-by-user', rows };
+    total = await countExportRows(conn, items, job);
+    progress();
     folder = await mkdtemp(path.join(path.dirname(chosen.filePath), '.earthql-export-'));
     const destination = path.join(folder, 'output');
     const out = outputStream(destination); outputs.push(out);
@@ -164,7 +193,7 @@ export async function exportTables(sessions: SessionManager, exportId: string, p
     }
     if (job.cancelled) return { status: 'cancelled-by-user', rows };
     await rename(readyFile, chosen.filePath);
-    windowForDialog()?.webContents.send('export:progress', { exportId, rows, done: true });
+    progress(true);
     return { status: 'ok', rows, path: chosen.filePath };
   } catch (error) {
     return job.cancelled ? { status: 'cancelled-by-user', rows } : { status: 'error', rows, error: sessions.errorFor(profileId, error) };
@@ -206,6 +235,7 @@ export async function importTable(sessions: SessionManager, token: string, mappi
   const plan = plans.get(token);
   if (!plan || plan.expires < Date.now()) throw makeError('config', 'This import preview expired. Choose the file again.');
   if (jobs.has(token)) throw makeError('config', 'This import is already running.');
+  if (plan.cancelled) { plans.delete(token); return { status: 'cancelled', rows: 0 }; }
   const job: { cancelled: boolean; runId?: string } = { cancelled: false };
   jobs.set(token, job);
   let rows = 0;

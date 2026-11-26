@@ -22,6 +22,7 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
 
 export const api: EarthQLApi = {
   platform: bridge.platform,
+  revealFile: (path) => call('files:reveal', path),
   backup: {
     save: (settings) => call('backup:save', settings),
     open: () => call('backup:open'),

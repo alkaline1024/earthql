@@ -353,7 +353,7 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
                   }
                   setDraggingId(null); setDropTarget(null); setDragGroup(null);
                 }}>
-                <span aria-hidden="true">{group ? group.collapsed ? '▸' : '▾' : '·'}</span>
+                <span className={group ? 'chev' : undefined} aria-hidden="true">{group ? '▸' : '·'}</span>
                 <span className="grow">{group?.name ?? 'Ungrouped'}</span><span className="muted">{items.length}</span>
               </button>}
               {(!group?.collapsed) && items.map(({ profile }) => (

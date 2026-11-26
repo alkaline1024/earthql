@@ -52,6 +52,7 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
   const [closeTip, setCloseTip] = useState<TabMenu | null>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const previousTabPositions = useRef(new Map<string, number>());
+  const reorderAnimations = useRef(new WeakMap<HTMLElement, Animation>());
   const dragSlots = useRef<{ id: string; scroll: number; slots: { id: string; center: number }[] } | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [dragGroupId, setDragGroupId] = useState<string | null>(null);
@@ -86,12 +87,16 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
     for (const element of elements) {
       const id = element.dataset.tabId!;
       if (id === draggedTabId) continue;
-      element.getAnimations().forEach((animation) => animation.cancel());
+      reorderAnimations.current.get(element)?.cancel();
       const left = element.getBoundingClientRect().left;
       const previous = previousTabPositions.current.get(id);
       positions.set(id, left);
       if (draggedTabId && previous !== undefined && Math.abs(previous - left) > 1 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-        element.animate([{ transform: `translateX(${previous - left}px)` }, { transform: 'translateX(0)' }], { duration: 140, easing: 'ease-out' });
+        const animation = element.animate(
+          [{ transform: `translateX(${previous - left}px)` }, { transform: 'translateX(0)' }],
+          { duration: 140, easing: 'ease-out' },
+        );
+        reorderAnimations.current.set(element, animation);
       }
     }
     previousTabPositions.current = positions;

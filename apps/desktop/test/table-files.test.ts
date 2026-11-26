@@ -5,6 +5,9 @@ import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import ExcelJS from 'exceljs';
 import { mysqlDialect } from '@earthql/driver-mysql';
+import { postgresDialect } from '@earthql/driver-postgres';
+import { mssqlDialect } from '@earthql/driver-mssql';
+import { databricksDialect } from '@earthql/driver-databricks';
 import type { SessionManager } from '../src/main/sessions';
 import type { TableExportOptions } from '../src/shared/api';
 const mocks = vi.hoisted(() => ({ save: vi.fn(), open: vi.fn(), send: vi.fn() }));
@@ -20,11 +23,16 @@ const insert = vi.fn();
 const runSql = vi.fn();
 const closeCursor = vi.fn();
 let failFetch = false;
+let failCount = false;
 let cancelId: string | undefined;
 const sessions = {
   get: () => ({ conn: { driver: 'mysql', dialect: mysqlDialect, capabilities: () => ({ insert: true }), openCursor: (statement: {sql: string}) => ({
     fetch: async () => {
       if (cancelId) cancelTableFileJob(cancelId, sessions as unknown as SessionManager);
+      if (statement.sql.startsWith('SELECT COUNT')) {
+        if (failCount) throw Error('count failed');
+        return { columns: [{ name: 'total_rows', type: 'BIGINT', kind: 'number' }], rows: [['2']], done: true };
+      }
       if (failFetch) throw Error('fetch failed');
       if (statement.sql.startsWith('SHOW CREATE')) return { rows: [['t', 'CREATE TABLE `demo`.`t` (`id` bigint, `name` text)']], done: true };
       return { columns: [{ name: 'id', type: 'BIGINT', kind: 'number' }, { name: 'name', type: 'text', kind: 'text' }], rows: [['9223372036854775807', 'ไทย'], ['2', '=SUM(A1:A2)']], done: true };
@@ -41,7 +49,7 @@ const sessions = {
 beforeEach(async () => {
   folder = await mkdtemp(path.join(os.tmpdir(), 'earthql-table-test-'));
   mocks.save.mockImplementation(async () => ({ canceled: false, filePath: path.join(folder, 'output') }));
-  insert.mockReset(); insert.mockResolvedValue({ status: 'ok' }); runSql.mockReset(); closeCursor.mockReset(); failFetch = false; cancelId = undefined;
+  insert.mockReset(); insert.mockResolvedValue({ status: 'ok' }); runSql.mockReset(); closeCursor.mockReset(); failFetch = false; failCount = false; cancelId = undefined; mocks.send.mockClear();
 });
 afterEach(async () => { await rm(folder, { recursive: true, force: true }); });
 
@@ -80,6 +88,50 @@ describe('table file exports', () => {
     expect(await readFile(path.join(folder, 'output'), 'utf8')).toBe('existing data');
     expect(await readdir(folder)).toEqual(['output']);
   });
+  it('counts total rows up front and reports rows/total in progress events', async () => {
+    expect((await exportTables(sessions, 'total', 'p', [item, { ...item, object: { ...object, name: 'other' } }], options)).status).toBe('ok');
+    const events = mocks.send.mock.calls.filter(([channel]) => channel === 'export:progress').map(([, payload]) => payload as { exportId: string; rows: number; total?: number; done: boolean });
+    expect(events[0]).toMatchObject({ exportId: 'total', rows: 0, total: 4, done: false });
+    expect(events.at(-1)).toMatchObject({ rows: 4, total: 4, done: true });
+  });
+  it('still exports when counting fails, with an unknown total', async () => {
+    failCount = true;
+    expect((await exportTables(sessions, 'nocount', 'p', [item], options)).status).toBe('ok');
+    expect(await readFile(path.join(folder, 'output'), 'utf8')).toContain('ไทย');
+    const events = mocks.send.mock.calls.filter(([channel]) => channel === 'export:progress').map(([, payload]) => payload as { total?: number });
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) expect(event.total).toBeUndefined();
+  });
+});
+
+describe('export row counting per driver', () => {
+  const object = { database: 'demo', name: 't' };
+  const item = { object, data: true, structure: false, drop: false };
+  const drivers = [
+    { driver: 'postgres', dialect: postgresDialect, count: 'COUNT(*)' },
+    { driver: 'mysql', dialect: mysqlDialect, count: 'COUNT(*)' },
+    { driver: 'mssql', dialect: mssqlDialect, count: 'COUNT_BIG(*)' },
+    { driver: 'databricks', dialect: databricksDialect, count: 'COUNT(*)' },
+  ] as const;
+  for (const { driver, dialect, count } of drivers) {
+    it(`uses ${count} with the ${driver} dialect's qualified name`, async () => {
+      const countSqls: string[] = [];
+      const driverSessions = {
+        get: () => ({ conn: { driver, dialect, capabilities: () => ({ insert: true }), openCursor: (statement: { sql: string }) => ({
+          fetch: async () => {
+            if (statement.sql.startsWith('SELECT COUNT')) { countSqls.push(statement.sql); return { columns: [{ name: 'total_rows', type: 'BIGINT', kind: 'number' }], rows: [['1']], done: true }; }
+            return { columns: [{ name: 'id', type: 'BIGINT', kind: 'number' }], rows: [['1']], done: true };
+          }, close: vi.fn(async () => undefined), cancel: vi.fn(async () => 'requested'),
+        }) } }),
+        structure: async () => ({ ...structure, columns: [structure.columns[0]] }),
+        errorFor: (_: unknown, error: Error) => ({ category: 'unknown', message: error.message }),
+      } as unknown as SessionManager;
+      expect((await exportTables(driverSessions, `count-${driver}`, 'p', [item], options)).status).toBe('ok');
+      expect(countSqls).toEqual([`SELECT ${count} AS total_rows FROM ${dialect.qualify(object)}`]);
+      const events = mocks.send.mock.calls.filter(([channel]) => channel === 'export:progress').map(([, payload]) => payload as { total?: number });
+      expect(events[0]?.total).toBe(1);
+    });
+  }
 });
 
 describe('table file imports', () => {

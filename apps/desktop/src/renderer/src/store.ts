@@ -49,6 +49,9 @@ export interface AppNotification {
   text: string;
   timestamp: number;
   read: boolean;
+  status?: 'running' | 'stopping' | 'done';
+  stop?: () => Promise<void>;
+  path?: string;
 }
 
 export interface Toast {
@@ -114,6 +117,7 @@ interface AppState {
   toasts: Toast[];
   notifications: AppNotification[];
   addNotification(category: NotificationCategory, text: string): void;
+  updateNotification(id: string, changes: Partial<AppNotification>): void;
   markNotificationsRead(): void;
   sqlCounter: number;
   /** Which action the SQL toolbar's Run button performs by default (persisted, app-wide). */
@@ -125,6 +129,12 @@ interface AppState {
   /** Whether Beautify upper-cases SQL keywords (persisted). */
   beautifyUppercase: boolean;
   setBeautifyUppercase(uppercase: boolean): void;
+  /** Whether exports skip the progress dialog and run in the background right away (persisted). */
+  exportInBackground: boolean;
+  setExportInBackground(background: boolean): void;
+  /** Whether a success dialog appears when a foreground export completes (persisted). */
+  exportSuccessDialog: boolean;
+  setExportSuccessDialog(show: boolean): void;
   /** Color theme (persisted; 'system' follows the OS). */
   theme: Theme;
   autoThemes: AutoThemes;
@@ -213,6 +223,22 @@ function loadDefaultRowLimit(): number {
 function loadBeautifyUppercase(): boolean {
   try {
     return localStorage.getItem('earthql.beautifyUppercase') !== 'false';
+  } catch {
+    return true;
+  }
+}
+
+function loadExportInBackground(): boolean {
+  try {
+    return localStorage.getItem('earthql.exportInBackground') === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function loadExportSuccessDialog(): boolean {
+  try {
+    return localStorage.getItem('earthql.exportSuccessDialog') !== 'false';
   } catch {
     return true;
   }
@@ -426,6 +452,8 @@ export async function reloadBackupSettings() {
     sqlRunDefault: loadSqlRunDefault(),
     defaultRowLimit: loadDefaultRowLimit(),
     beautifyUppercase: loadBeautifyUppercase(),
+    exportInBackground: loadExportInBackground(),
+    exportSuccessDialog: loadExportSuccessDialog(),
     backupVersion: state.backupVersion + 1,
   }));
   const { loadProfiles } = useApp.getState();
@@ -589,6 +617,9 @@ export const useApp = create<AppState>((set, get) => ({
     const entry = { id: uid(), category, text, timestamp: Date.now(), read: false };
     set((state) => ({ notifications: [entry, ...state.notifications].slice(0, 100) }));
   },
+  updateNotification(id, changes) {
+    set((state) => ({ notifications: state.notifications.map((entry) => entry.id === id ? { ...entry, ...changes } : entry) }));
+  },
   markNotificationsRead() {
     set((state) => ({ notifications: state.notifications.map((entry) => ({ ...entry, read: true })) }));
   },
@@ -619,6 +650,24 @@ export const useApp = create<AppState>((set, get) => ({
       get().toast('error', 'Preference could not be saved.');
     }
     set({ beautifyUppercase: uppercase });
+  },
+  exportInBackground: loadExportInBackground(),
+  setExportInBackground(background) {
+    try {
+      localStorage.setItem('earthql.exportInBackground', String(background));
+    } catch {
+      get().toast('error', 'Preference could not be saved.');
+    }
+    set({ exportInBackground: background });
+  },
+  exportSuccessDialog: loadExportSuccessDialog(),
+  setExportSuccessDialog(show) {
+    try {
+      localStorage.setItem('earthql.exportSuccessDialog', String(show));
+    } catch {
+      get().toast('error', 'Preference could not be saved.');
+    }
+    set({ exportSuccessDialog: show });
   },
   keybindings: loadKeybindings(),
   setKeybinding(id, accelerator) {

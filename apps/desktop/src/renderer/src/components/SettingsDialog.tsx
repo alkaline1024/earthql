@@ -19,6 +19,10 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setBeautifyUppercase = useApp((s) => s.setBeautifyUppercase);
   const sqlRunDefault = useApp((s) => s.sqlRunDefault);
   const setSqlRunDefault = useApp((s) => s.setSqlRunDefault);
+  const exportInBackground = useApp((s) => s.exportInBackground);
+  const setExportInBackground = useApp((s) => s.setExportInBackground);
+  const exportSuccessDialog = useApp((s) => s.exportSuccessDialog);
+  const setExportSuccessDialog = useApp((s) => s.setExportSuccessDialog);
   const [tab, setTab] = useState<'general' | 'shortcuts' | 'backup'>('general');
   const [working, setWorking] = useState(false);
 
@@ -128,6 +132,21 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
                 </button>
               </div>
             </div>
+          </div>
+        </section>
+
+        <section>
+          <h3 className="settings-h">Export</h3>
+          <div className="col" style={{ gap: 12 }}>
+            <label className="check">
+              <input type="checkbox" checked={exportInBackground} onChange={(e) => setExportInBackground(e.target.checked)} />
+              Always export in the background
+            </label>
+            <span className="muted small">When off, a progress dialog appears and you can send the export to the background from there.</span>
+            <label className="check">
+              <input type="checkbox" checked={exportSuccessDialog} onChange={(e) => setExportSuccessDialog(e.target.checked)} />
+              Show a success dialog when an export completes
+            </label>
           </div>
         </section>
       </div>

@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { backgroundTransfer, trackTransfer } from '../background-transfer';
+import { useEffect, useRef, useState } from 'react';
 import type { ExportResult, ExportScope } from '../../../shared/api';
 import { api, errorInfo, uid } from '../api';
 import { useApp } from '../store';
-import { ErrorView, Modal, Spinner } from './common';
+import { ErrorView, Modal } from './common';
+import { ExportProgressModal, ExportSuccessModal } from './ExportProgress';
 
 export interface ExportOption {
   id: string;
@@ -32,32 +34,70 @@ export function ExportDialog({
   const [exportId] = useState(uid);
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState(0);
+  const [total, setTotal] = useState<number | undefined>();
+  const [phase, setPhase] = useState<'configure' | 'progress' | 'success'>('configure');
+  const [stopping, setStopping] = useState(false);
+  const [donePath, setDonePath] = useState<string | undefined>();
   const [result, setResult] = useState<ExportResult | null>(null);
+  const inFlight = useRef<Promise<ExportResult> | null>(null);
+  const backgrounded = useRef(false);
   const toast = useApp((s) => s.toast);
+  const exportInBackground = useApp((s) => s.exportInBackground);
+  const exportSuccessDialog = useApp((s) => s.exportSuccessDialog);
 
-  useEffect(() => api.exports.onProgress((p) => p.exportId === exportId && setRows(p.rows)), [exportId]);
+  useEffect(() => api.exports.onProgress((p) => { if (p.exportId === exportId) { setRows(p.rows); setTotal(p.total); } }), [exportId]);
 
   const selected = options.find((o) => o.id === choice);
 
   async function run() {
     if (!selected?.scope) return;
+    if (running) return;
     setRunning(true);
-    setResult(null);
-    try {
-      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-      const r = await api.exports.run(exportId, selected.scope, { nullText, bom, suggestedName: `${name}-${stamp}.csv` });
-      setResult(r);
-      if (r.status === 'ok' || (r.status !== 'dialog-cancelled' && selected.scope.kind === 'cursor')) onExported?.(selected.id);
-      if (r.status === 'ok') {
-        toast('ok', `Exported ${r.rows?.toLocaleString()} rows to ${r.path}`, 'Export');
-        onClose();
-      }
-    } catch (e) {
-      setResult({ status: 'error', error: errorInfo(e) });
-    } finally {
-      setRunning(false);
+    const scope = selected.scope;
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const start = () => api.exports.run(exportId, scope, { nullText, bom, suggestedName: `${name}-${stamp}.csv` });
+    const cancel = () => api.exports.cancel(exportId);
+    const notifyExported = (outcome: ExportResult) => {
+      if (outcome.status === 'ok' || (outcome.status !== 'dialog-cancelled' && scope.kind === 'cursor')) onExported?.(selected.id);
+    };
+    if (exportInBackground) {
+      void backgroundTransfer(exportId, 'Export', name, start, cancel, (outcome) => notifyExported(outcome as ExportResult));
+      onClose();
+      return;
+    }
+    setResult(null); setRows(0); setTotal(undefined); setStopping(false);
+    setPhase('progress');
+    const promise = start();
+    inFlight.current = promise;
+    let outcome: ExportResult;
+    try { outcome = await promise; }
+    catch (error) { outcome = { status: 'error', error: errorInfo(error) }; }
+    inFlight.current = null;
+    if (backgrounded.current) return;
+    notifyExported(outcome);
+    setRunning(false);
+    setStopping(false);
+    if (outcome.status === 'ok') {
+      if (exportSuccessDialog) { setDonePath(outcome.path); setPhase('success'); }
+      else { toast('ok', `Export completed · ${outcome.rows?.toLocaleString() ?? 0} rows`, 'Export'); onClose(); }
+    } else {
+      if (outcome.status !== 'dialog-cancelled') setResult(outcome);
+      setPhase('configure');
     }
   }
+  function toBackground() {
+    if (!inFlight.current || !selected?.scope) return;
+    const scope = selected.scope;
+    backgrounded.current = true;
+    void trackTransfer(exportId, 'Export', name, inFlight.current, () => api.exports.cancel(exportId), (outcome) => {
+      const result = outcome as ExportResult;
+      if (result.status === 'ok' || (result.status !== 'dialog-cancelled' && scope.kind === 'cursor')) onExported?.(selected.id);
+    });
+    onClose();
+  }
+
+  if (phase === 'progress') return <ExportProgressModal title="Export CSV" summary={name} rows={rows} total={total} stopping={stopping} onStop={() => { setStopping(true); void api.exports.cancel(exportId).catch(() => setStopping(false)); }} onBackground={toBackground} />;
+  if (phase === 'success') return <ExportSuccessModal path={donePath} onClose={onClose} />;
 
   return (
     <Modal
@@ -66,27 +106,13 @@ export function ExportDialog({
       onClose={() => (running ? undefined : onClose())}
       footer={
         <>
-          {running && (
-            <>
-              <Spinner />
-              <span className="muted">{rows.toLocaleString()} rows written…</span>
-            </>
-          )}
           <span className="spacer" />
-          {running ? (
-            <button className="btn" onClick={() => void api.exports.cancel(exportId)}>
-              Stop export
-            </button>
-          ) : (
-            <>
-              <button className="btn" onClick={onClose}>
-                Cancel
-              </button>
-              <button className="btn primary" disabled={!selected?.scope} onClick={() => void run()}>
-                Choose file & export…
-              </button>
-            </>
-          )}
+          <button className="btn" disabled={running} onClick={onClose}>
+            Cancel
+          </button>
+          <button className="btn primary" disabled={running || !selected?.scope} onClick={() => void run()}>
+            Choose file & export…
+          </button>
         </>
       }
     >

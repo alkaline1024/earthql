@@ -1,6 +1,6 @@
 import type { BackupCategory } from '../shared/app-backup';
 import { openAppBackup, restoreAppBackup, saveAppBackup } from './app-backup';
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -47,6 +47,12 @@ export function registerIpc(sessions: SessionManager): void {
     const missingProfiles = restoreAppBackup(pendingBackup.backup, categories);
     pendingBackup = null;
     return missingProfiles;
+  });
+
+  handle('files:reveal', null, async (file: string) => {
+    if (typeof file !== 'string' || !path.isAbsolute(file)) throw new Error('Invalid file path.');
+    await fs.access(file);
+    shell.showItemInFolder(file);
   });
 
   // --- profiles -------------------------------------------------------------

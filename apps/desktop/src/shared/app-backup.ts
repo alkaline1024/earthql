@@ -10,6 +10,7 @@ export const BACKUP_CATEGORIES = {
   filters: { label: 'Saved filters', detail: 'Named filters for tables and views', keys: [] },
   settings: { label: 'Settings', detail: 'Appearance, shortcuts, SQL preferences and sidebar sizes', keys: [
     'theme', 'autoThemes', 'uiStyle', 'keybindings', 'defaultRowLimit', 'beautifyUppercase', 'sqlRunDefault', 'sidebarWidth', 'favoritesHeight', 'quickStartSeen',
+    'exportInBackground', 'exportSuccessDialog',
   ] },
 } as const;
 

@@ -457,7 +457,7 @@ code,
   width: 6px;
   height: 6px;
   box-sizing: border-box;
-  transform: translateX(-50%);
+  translate: -50%;
   border: 1px solid var(--env, var(--accent));
   border-radius: 50%;
   background: var(--env, var(--accent));
@@ -471,13 +471,6 @@ code,
   background: transparent;
   border-color: var(--line-strong);
   border-top-color: var(--env, var(--accent));
-  animation: connection-reconnect-spin 0.7s linear infinite;
-}
-
-@keyframes connection-reconnect-spin {
-  to {
-    transform: translateX(-50%) rotate(360deg);
-  }
 }
 
 .connection-switcher-item[aria-pressed="true"] {
@@ -1289,7 +1282,6 @@ label.check {
 }
 .table-favorites-heading .chev {
   font-size: 9px;
-  transition: transform 0.12s;
 }
 .table-favorites-heading .chev.open { transform: rotate(90deg); }
 .table-favorites-count { color: var(--text-3); font-weight: normal; }
@@ -1322,7 +1314,7 @@ label.check {
   text-align: left;
   cursor: pointer;
 }
-.table-favorite-folder-toggle .chev { font-size: 9px; transition: transform 0.12s; }
+.table-favorite-folder-toggle .chev { font-size: 9px; }
 .table-favorite-folder-toggle .chev.open { transform: rotate(90deg); }
 .table-favorite-folder-children { padding-left: 16px; }
 .table-favorite-open {
@@ -1385,7 +1377,6 @@ label.check {
 }
 .sidebar-table-group-toggle .chev {
   font-size: 9px;
-  transition: transform .1s;
 }
 .sidebar-table-group-toggle .chev.open {
   transform: rotate(90deg);
@@ -1431,7 +1422,6 @@ label.check {
   color: var(--text-3);
   font-size: 9px;
   flex-shrink: 0;
-  transition: transform 0.12s;
 }
 .tree-row .chev.open {
   transform: rotate(90deg);
@@ -1902,7 +1892,6 @@ label.check {
   border: 2px solid var(--line-strong);
   border-top-color: var(--accent);
   border-radius: 50%;
-  animation: spin 0.7s linear infinite;
   flex-shrink: 0;
 }
 .btn.primary .spinner {
@@ -1914,12 +1903,6 @@ label.check {
   background: color-mix(in srgb, var(--accent) 66%, black);
   color: #fff;
 }
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* ---------- modal ---------- */
 
 .backdrop {
@@ -1968,6 +1951,57 @@ label.check {
   align-items: center;
   border-top: 1px solid var(--line);
   background: var(--bg-sunken);
+}
+
+.export-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 0;
+}
+.export-progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+}
+.export-progress-names {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.export-progress-row .muted {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+.export-progress-bar {
+  width: 100%;
+  height: 8px;
+  appearance: none;
+  border: none;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+.export-progress-bar::-webkit-progress-bar {
+  background: var(--bg-sunken);
+  border-radius: 999px;
+}
+.export-progress-bar::-webkit-progress-value {
+  background: var(--primary);
+  border-radius: 999px;
+  transition: width 0.2s ease;
+}
+.export-success-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+.export-success-actions .btn {
+  width: 100%;
+  justify-content: center;
 }
 
 .database-picker-list {
@@ -3385,13 +3419,6 @@ kbd,
   background: transparent;
   border: 1px solid var(--line-strong);
   border-top-color: var(--env);
-  animation: env-reconnect-spin 0.7s linear infinite;
-}
-
-@keyframes env-reconnect-spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .notification-control {

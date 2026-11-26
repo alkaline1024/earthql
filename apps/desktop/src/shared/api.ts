@@ -113,6 +113,8 @@ export interface ExportOptions {
 export interface ExportProgress {
   exportId: string;
   rows: number;
+  /** Total rows the export will write, when known (counted up front for table exports). */
+  total?: number;
   done: boolean;
 }
 
@@ -166,6 +168,7 @@ export interface TableImportResult {
 export interface UpdateStatus { available: boolean; busy: boolean; downloadPercent: number | null; }
 
 export interface EarthQLApi {
+  revealFile(path: string): Promise<void>;
   backup: {
     save(settings: BackupSettings): Promise<string | null>;
     open(): Promise<BackupPreview | null>;

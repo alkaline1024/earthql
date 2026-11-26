@@ -1,3 +1,4 @@
+import { backgroundTransfer, trackTransfer } from '../background-transfer';
 import { useEffect, useRef, useState } from 'react';
 import { describePath, type ObjectPath, type TreeNode } from '@earthql/core';
 import type { ExportResult, TableExportItem, TableExportOptions, TableFileFormat } from '../../../shared/api';
@@ -5,6 +6,7 @@ import { api, errorInfo, uid } from '../api';
 import { connectionName, profileOf, useApp } from '../store';
 import { FILE_NAME_TOKENS, tableFileName } from '../table-file-name';
 import { ErrorView, Modal, Spinner } from './common';
+import { ExportProgressModal, ExportSuccessModal, exportSummary } from './ExportProgress';
 
 export function TableExportDialog({ profileId, object, selectedObjects, views = [], onClose }: { profileId: string; object: ObjectPath; selectedObjects?: ObjectPath[]; views?: ObjectPath[]; onClose: () => void }) {
   const isView = (target: ObjectPath) => views.some((view) => describePath(view) === describePath(target));
@@ -28,9 +30,17 @@ export function TableExportDialog({ profileId, object, selectedObjects, views = 
   const [exportId] = useState(uid);
   const [running, setRunning] = useState(false);
   const [rows, setRows] = useState(0);
+  const [total, setTotal] = useState<number | undefined>();
+  const [phase, setPhase] = useState<'configure' | 'progress' | 'success'>('configure');
+  const [stopping, setStopping] = useState(false);
+  const [donePath, setDonePath] = useState<string | undefined>();
   const [result, setResult] = useState<ExportResult | null>(null);
+  const inFlight = useRef<Promise<ExportResult> | null>(null);
+  const backgrounded = useRef(false);
   const allCheckbox = useRef<HTMLInputElement>(null);
   const toast = useApp((state) => state.toast);
+  const exportInBackground = useApp((state) => state.exportInBackground);
+  const exportSuccessDialog = useApp((state) => state.exportSuccessDialog);
   const isSql = options.format === 'sql';
   const enabledItems = items.filter((item) => isSql ? item.data || item.structure : item.data);
   const extension = !isSql && options.format !== 'xlsx' && enabledItems.length > 1 ? 'zip' : options.format + (isSql && options.gzip ? '.gz' : '');
@@ -48,7 +58,7 @@ export function TableExportDialog({ profileId, object, selectedObjects, views = 
     }).catch((error) => { if (current) setListError(errorInfo(error).message); }).finally(() => { if (current) setLoading(false); });
     return () => { current = false; };
   }, [profileId, object, selectedObjects]);
-  useEffect(() => api.exports.onProgress((progress) => { if (progress.exportId === exportId) setRows(progress.rows); }), [exportId]);
+  useEffect(() => api.exports.onProgress((progress) => { if (progress.exportId === exportId) { setRows(progress.rows); setTotal(progress.total); } }), [exportId]);
   useEffect(() => { if (allCheckbox.current) allCheckbox.current.indeterminate = enabledItems.length > 0 && enabledItems.length < tables.length; }, [enabledItems.length, tables.length]);
 
   const updateOption = <K extends keyof TableExportOptions>(key: K, value: TableExportOptions[K]) => setOptions((previous) => ({ ...previous, [key]: value }));
@@ -63,21 +73,50 @@ export function TableExportDialog({ profileId, object, selectedObjects, views = 
   }
   async function run() {
     if (running || !enabledItems.length) return;
-    setRunning(true); setRows(0); setResult(null);
-    try {
-      const selected = tables.flatMap((table) => { const item = enabledItems.find((item) => describePath(item.object) === describePath(table)); return item ? [item] : []; });
-      const response = await api.tableFiles.export(exportId, profileId, selected, { ...options, suggestedName: fileName });
-      setResult(response);
-      if (response.status === 'ok') { toast('ok', `Exported ${response.rows?.toLocaleString()} rows to ${response.path}`, 'Export'); onClose(); }
-    } catch (error) { setResult({ status: 'error', error: errorInfo(error) }); }
-    finally { setRunning(false); }
+    setRunning(true);
+    const selected = tables.flatMap((table) => { const item = enabledItems.find((item) => describePath(item.object) === describePath(table)); return item ? [item] : []; });
+    const start = () => api.tableFiles.export(exportId, profileId, selected, { ...options, suggestedName: fileName });
+    const cancel = () => api.tableFiles.cancel(exportId);
+    if (exportInBackground) {
+      void backgroundTransfer(exportId, 'Export', fileName, start, cancel);
+      onClose();
+      return;
+    }
+    setResult(null); setRows(0); setTotal(undefined); setStopping(false);
+    setPhase('progress');
+    const promise = start();
+    inFlight.current = promise;
+    let outcome: ExportResult;
+    try { outcome = await promise; }
+    catch (error) { outcome = { status: 'error', error: errorInfo(error) }; }
+    inFlight.current = null;
+    if (backgrounded.current) return;
+    setRunning(false);
+    setStopping(false);
+    if (outcome.status === 'ok') {
+      if (exportSuccessDialog) { setDonePath(outcome.path); setPhase('success'); }
+      else { toast('ok', `Export completed · ${outcome.rows?.toLocaleString() ?? 0} rows`, 'Export'); onClose(); }
+    } else {
+      if (outcome.status !== 'dialog-cancelled') setResult(outcome);
+      setPhase('configure');
+    }
   }
+  function toBackground() {
+    if (!inFlight.current) return;
+    backgrounded.current = true;
+    void trackTransfer(exportId, 'Export', fileName, inFlight.current, () => api.tableFiles.cancel(exportId));
+    onClose();
+  }
+
+  const summary = exportSummary(enabledItems.map((item) => item.object.name));
+  if (phase === 'progress') return <ExportProgressModal title={enabledItems.length > 1 ? 'Export multiple tables' : 'Export table'} summary={summary} rows={rows} total={total} stopping={stopping} onStop={() => { setStopping(true); void api.tableFiles.cancel(exportId).catch(() => setStopping(false)); }} onBackground={toBackground} />;
+  if (phase === 'success') return <ExportSuccessModal path={donePath} onClose={onClose} />;
 
   return <>
     <Modal title="Export tables" onClose={() => { if (!running && !customize) onClose(); }} footer={<>
-      {running && <><Spinner /><span className="muted">{rows.toLocaleString()} rows exported…</span></>}
+      {running && <><Spinner /><span className="muted">Starting export…</span></>}
       <span className="spacer" />
-      {running ? <button className="btn" onClick={() => void api.tableFiles.cancel(exportId)}>Stop export</button> : <><button className="btn" onClick={onClose}>Cancel</button><button className="btn primary" disabled={!enabledItems.length || !fileName.trim()} onClick={() => void run()}>Export…</button></>}
+      <button className="btn" disabled={running} onClick={onClose}>Cancel</button><button className="btn primary" disabled={running || !enabledItems.length || !fileName.trim()} onClick={() => void run()}>Export…</button>
     </>}>
       <fieldset className="table-transfer-fieldset" disabled={running}>
         <div className="table-export-layout">

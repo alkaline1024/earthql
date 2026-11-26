@@ -1,0 +1,101 @@
+/* Keep motion local to the control or overlay that changed. Tab contents, grid
+   selections and drag/resize geometry should respond immediately. */
+
+.ctx-connection-trigger[aria-expanded="true"] .ctx-connection-chevron,
+.sidebar-connection-trigger[aria-expanded="true"] .ctx-connection-chevron {
+  transform: rotate(225deg);
+}
+
+:is(.toolbar-dropdown, .split-btn) > button[aria-expanded="true"] .toolbar-chevron {
+  transform: rotate(180deg);
+}
+
+.conn-group-header .chev {
+  display: inline-block;
+}
+
+.conn-group-header[aria-expanded="true"] .chev {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root {
+    --motion-quick: 100ms;
+    --motion-standard: 150ms;
+    --motion-ease: cubic-bezier(.2, .65, .3, 1);
+  }
+
+  :is(.btn, .tab:not(.tab-drag-ghost), .segmented button, .subtabs button, .result-tabs button,
+      .input, .select, .textarea, .env-chip, .ui-style-option, .theme-swatch-preview,
+      .sidebar-sections button, .sidebar-connection-trigger, .ctx-connection-trigger,
+      .filter-apply, .grid-foreign-link) {
+    transition-property: background-color, border-color, color;
+    transition-duration: var(--motion-quick);
+    transition-timing-function: ease-out;
+  }
+
+  :is(.conn-item, .conn-group-header, .connection-switcher-item,
+      .tree-row, .sidebar-table-group-row, .table-favorite, .table-favorite-folder,
+      .database-picker-item, .table-export-object,
+      .conn-context-menu button, .tab-context-menu button, .toolbar-menu button, .ctx-connection-menu button,
+      .split-divider, .splitter, .sidebar-resize-handle, .favorites-resize-handle, .toast) {
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  .tab .t-close {
+    transition: opacity var(--motion-quick) ease-out, background-color var(--motion-quick) ease-out;
+  }
+
+  :is(.tree-row, .conn-group-header, .sidebar-table-group-toggle,
+      .table-favorites-heading, .table-favorite-folder-toggle) .chev,
+  .ctx-connection-chevron,
+  .toolbar-chevron {
+    transition: transform var(--motion-standard) var(--motion-ease);
+  }
+
+  /* Opacity keeps the viewport coordinates used by fixed submenus intact. */
+  :is(.conn-context-menu, .tab-context-menu, .toolbar-menu, .conn-submenu,
+      .ctx-connection-menu, .sidebar-connection-details, .notification-panel, .tab-close-tooltip,
+      .panel-drop-preview, .unsaved-dot, .update-notice) {
+    animation: motion-reveal var(--motion-quick) ease-out;
+  }
+
+  .main-split[data-pointer-drop]::after {
+    animation: motion-reveal var(--motion-quick) ease-out;
+  }
+
+  .backdrop {
+    animation: motion-scrim var(--motion-standard) ease-out;
+  }
+
+  .modal,
+  .filters {
+    animation: motion-reveal var(--motion-standard) ease-out;
+  }
+
+  .toast {
+    animation: motion-toast var(--motion-standard) var(--motion-ease);
+  }
+
+  .spinner,
+  .connection-switcher-item[aria-busy="true"]::after,
+  .env[aria-busy="true"]::before {
+    animation: motion-spin 700ms linear infinite;
+  }
+
+  @keyframes motion-reveal {
+    from { opacity: .72; }
+  }
+
+  @keyframes motion-scrim {
+    from { background-color: transparent; }
+  }
+
+  @keyframes motion-toast {
+    from { opacity: .65; transform: translateY(4px); }
+  }
+
+  @keyframes motion-spin {
+    to { rotate: 360deg; }
+  }
+}

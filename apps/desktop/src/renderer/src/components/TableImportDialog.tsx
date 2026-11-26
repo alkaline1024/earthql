@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { backgroundTransfer } from '../background-transfer';
+import { useEffect, useRef, useState } from 'react';
 import { ctxForObject, describePath, type ErrorInfo, type ObjectPath } from '@earthql/core';
 import type { TableImportFormat, TableImportPreview, TableImportResult } from '../../../shared/api';
 import { api, errorInfo } from '../api';
@@ -7,6 +8,7 @@ import { objectHasUnsavedChanges } from '../unsaved-changes';
 import { ErrorView, Modal, Spinner } from './common';
 
 export function TableImportDialog({ profileId, object, format, onClose }: { profileId: string; object: ObjectPath; format: TableImportFormat; onClose: () => void }) {
+  const backgroundToken = useRef<string | null>(null);
   const [preview, setPreview] = useState<TableImportPreview | null>(null);
   const [mapping, setMapping] = useState<Record<string, string>>({});
   const [delimiter, setDelimiter] = useState(',');
@@ -22,7 +24,7 @@ export function TableImportDialog({ profileId, object, format, onClose }: { prof
   useEffect(() => {
     if (!preview) return;
     const off = api.exports.onProgress((progress) => { if (progress.exportId === preview.token) setWritten(progress.rows); });
-    return () => { off(); void api.tableFiles.release(preview.token); };
+    return () => { off(); if (backgroundToken.current !== preview.token) void api.tableFiles.release(preview.token); };
   }, [preview]);
   async function chooseFile() {
     setReading(true); setError(null);
@@ -41,18 +43,19 @@ export function TableImportDialog({ profileId, object, format, onClose }: { prof
   }
   async function run() {
     if (!preview || busy || unsaved) return;
-    setBusy(true); setError(null); setWritten(0);
-    try {
-      const response = await api.tableFiles.import(preview.token, mapping, emptyAsNull);
-      setResult(response);
-      if (response.rows || format === 'sql') {
-        const state = useApp.getState();
-        state.refreshTree(profileId, ctxForObject(object));
-        for (const tab of state.tabs) if (tab.profileId === profileId && tab.kind === 'table' && (format === 'sql' || describePath(tab.object) === describePath(object))) state.refreshTab(tab.id, true);
-      }
-      if (response.status === 'ok') { toast('ok', format === 'sql' ? `Imported ${response.statements} SQL statements (${response.rows} affected rows).` : `Imported ${response.rows.toLocaleString()} rows into ${describePath(object)}.`, 'Import'); onClose(); }
-    } catch (error) { setError(errorInfo(error)); }
-    finally { setBusy(false); }
+    setBusy(true);
+    backgroundToken.current = preview.token;
+    void backgroundTransfer(preview.token, 'Import', describePath(object),
+      () => api.tableFiles.import(preview.token, mapping, emptyAsNull),
+      () => api.tableFiles.cancel(preview.token),
+      (response) => {
+        if (response.rows || format === 'sql') {
+          const state = useApp.getState();
+          state.refreshTree(profileId, ctxForObject(object));
+          for (const tab of state.tabs) if (tab.profileId === profileId && tab.kind === 'table' && (format === 'sql' || describePath(tab.object) === describePath(object))) state.refreshTab(tab.id, true);
+        }
+      }).finally(() => api.tableFiles.release(preview.token));
+    onClose();
   }
   const mapped = Object.values(mapping).filter(Boolean);
   const invalidMapping = !mapped.length || new Set(mapped).size !== mapped.length;

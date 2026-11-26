@@ -1221,9 +1221,7 @@ export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profi
               <button role="menuitem" onClick={() => { setMenu(null); setImportFormat('json'); }}>From JSON…</button>
               <button role="menuitem" onClick={() => { setMenu(null); setImportFormat('sql'); }}>From SQL Dump…</button>
             </ContextSubmenu>}
-            <ContextSubmenu label="Export Table">
-              <button role="menuitem" onClick={() => { setMenu(null); selection.export(selectedNodes); }}>{multiple ? `Export ${selectedNodes.length} Tables…` : 'Export Table…'}</button>
-            </ContextSubmenu>
+            <MenuItem label={`Export ${selectedNodes.length} ${selectedNodes.length === 1 ? 'Table' : 'Tables'}…`} onClick={() => { setMenu(null); selection.export(selectedNodes); }} />
           </>}
           {node.kind === 'table' && <>
             <div className="conn-menu-separator" role="separator" />
