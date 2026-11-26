@@ -1,7 +1,17 @@
-<h1><img src="apps/desktop/src/renderer/public/earthql.png" width="40" height="40" alt=""> EarthQL</h1>
+<h1 align="middle">EarthQL</h1>
 
-macOS desktop database client for **PostgreSQL, MySQL, Databricks and Microsoft SQL Server**.
-Electron + React + TypeScript. Version 0.1 (first release scope).
+<h3 align="middle">macOS desktop database client for **PostgreSQL, MySQL, Databricks and Microsoft SQL Server**.
+Electron + React + TypeScript. Version 0.1 (first release scope).</h3>
+
+<p align="center">
+  <img align="middle" src="apps/desktop/src/renderer/public/earthql.png" width="96" height="96" alt="">
+</p>
+
+<p align="center">
+    <a href="https://github.com/alkaline1024/earthql/releases/download/v0.3.0/EarthQL-0.3.0-arm64-mac.dmg">
+        <img src="https://img.shields.io/badge/-Download-4EE9A3?style=for-the-badge" alt="Download">
+    </a>
+</p>
 
 ## Install and update
 
