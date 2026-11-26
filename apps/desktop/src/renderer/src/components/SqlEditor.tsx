@@ -227,7 +227,7 @@ export function SqlEditor({
         }}
       />
       {menu && (
-        <div className="tab-context-menu" ref={menuRef} role="menu" aria-label="Editor actions" onKeyDown={onMenuKey}>
+        <div className="tab-context-menu" ref={menuRef} role="menu" aria-label="SQL Query actions" onKeyDown={onMenuKey}>
           <button type="button" role="menuitem" disabled={!hasSelection} onClick={() => invoke(copySelection)}>
             <span>Copy</span><Kbd id="sys-copy" />
           </button>

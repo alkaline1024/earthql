@@ -16,7 +16,7 @@ export function PanelDropPreview({ pane }: { pane: PaneId }) {
     return panelDropZone(x, y, !!splitPane);
   }
 
-  return <div className="panel-drop-target" aria-hidden="true"
+  return <div data-tab-drop-pane={pane} className="panel-drop-target" aria-hidden="true"
     onDragOver={(event) => {
       if (!event.dataTransfer.types.includes('application/x-earthql-tab')) return;
       event.preventDefault();

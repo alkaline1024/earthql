@@ -1,3 +1,4 @@
+import { THEME_OPTIONS } from './themes';
 import { create } from 'zustand';
 import type { ErrorInfo, ExecContext, Filter, GridRowDelete, GridRowUpdate, InsertCell, ObjectKind, ObjectPath, TreeNode } from '@earthql/core';
 import type { OpenConnection, ProfileSummary } from '../../shared/api';
@@ -29,7 +30,7 @@ export const LIMITS = [100, 500, 1000, 5000, 10000, 50000, 100000, 500000];
 
 export const MAX_CLOSED_TABS = 25;
 
-export type Theme = 'system' | 'light' | 'dark' | 'white' | 'slate' | 'sepia';
+export type Theme = 'system' | 'light' | 'dark' | 'white' | 'slate' | 'sepia' | 'midnight' | 'graphite' | 'rose' | 'mist' | 'forest' | 'ember' | 'deep-teal';
 export type UiStyle = 'classic' | 'modern';
 
 export type PaneId = 'main' | 'split';
@@ -126,6 +127,8 @@ interface AppState {
   setBeautifyUppercase(uppercase: boolean): void;
   /** Color theme (persisted; 'system' follows the OS). */
   theme: Theme;
+  autoThemes: AutoThemes;
+  setAutoTheme(appearance: keyof AutoThemes, theme: Theme): void;
   setTheme(theme: Theme): void;
   /** Visual style, independent of the color theme (persisted). */
   uiStyle: UiStyle;
@@ -278,7 +281,7 @@ function commitKeybindings(next: KeybindingOverrides) {
   api.keybindings.apply(next).catch(() => toast('error', 'Shortcuts could not be applied to the menu.'));
 }
 
-const THEMES: Theme[] = ['system', 'light', 'dark', 'white', 'slate', 'sepia'];
+const THEMES = THEME_OPTIONS.map(({ id }) => id);
 
 function loadTheme(): Theme {
   try {
@@ -289,21 +292,31 @@ function loadTheme(): Theme {
   }
 }
 
-/** Reflects the chosen theme onto <html data-theme="..."> so CSS can key off it; 'system' removes the attribute. */
-function applyTheme(theme: Theme) {
+type AutoThemes = Record<'light' | 'dark', Theme>;
+const defaultAutoThemes: AutoThemes = { light: 'light', dark: 'dark' };
+const appearance = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-color-scheme: dark)') : undefined;
+
+function loadAutoThemes(): AutoThemes {
   try {
-    if (theme === 'system') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.dataset.theme = theme;
-  } catch {
-    // No DOM available (e.g. under test) — the preference is still stored.
+    const stored = JSON.parse(localStorage.getItem('earthql.autoThemes') ?? '{}');
+    return {
+      light: THEME_OPTIONS.find((option) => option.group === 'light' && option.id === stored?.light)?.id ?? 'light',
+      dark: THEME_OPTIONS.find((option) => option.group === 'dark' && option.id === stored?.dark)?.id ?? 'dark',
+    };
+  } catch { return defaultAutoThemes; }
+}
+
+function applyTheme(theme: Theme, autoThemes: AutoThemes) {
+  if (typeof document !== 'undefined') {
+    document.documentElement.dataset.theme = theme === 'system' ? autoThemes[appearance?.matches ? 'dark' : 'light'] : theme;
   }
 }
 
 function loadUiStyle(): UiStyle {
   try {
-    return localStorage.getItem('earthql.uiStyle') === 'modern' ? 'modern' : 'classic';
+    return localStorage.getItem('earthql.uiStyle') === 'classic' ? 'classic' : 'modern';
   } catch {
-    return 'classic';
+    return 'modern';
   }
 }
 
@@ -380,7 +393,8 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
 }
 
 const initialTheme = loadTheme();
-applyTheme(initialTheme);
+const initialAutoThemes = loadAutoThemes();
+applyTheme(initialTheme, initialAutoThemes);
 const initialUiStyle = loadUiStyle();
 applyUiStyle(initialUiStyle);
 
@@ -592,13 +606,22 @@ export const useApp = create<AppState>((set, get) => ({
     commitKeybindings({});
   },
   theme: initialTheme,
+  autoThemes: initialAutoThemes,
+  setAutoTheme(mode, theme) {
+    if (!THEME_OPTIONS.some((option) => option.id === theme && option.group === mode)) return;
+    const autoThemes = { ...get().autoThemes, [mode]: theme };
+    try { localStorage.setItem('earthql.autoThemes', JSON.stringify(autoThemes)); }
+    catch { get().toast('error', 'Auto theme preferences could not be saved.'); }
+    applyTheme(get().theme, autoThemes);
+    set({ autoThemes });
+  },
   setTheme(theme) {
     try {
       localStorage.setItem('earthql.theme', theme);
     } catch {
       get().toast('error', 'Theme could not be saved.');
     }
-    applyTheme(theme);
+    applyTheme(theme, get().autoThemes);
     set({ theme });
   },
   uiStyle: initialUiStyle,
@@ -897,6 +920,11 @@ export const useApp = create<AppState>((set, get) => ({
     setTimeout(() => get().dismissToast(id), kind === 'error' ? 7000 : 4000);
   },
 }));
+
+appearance?.addEventListener('change', () => {
+  const { theme, autoThemes } = useApp.getState();
+  if (theme === 'system') applyTheme(theme, autoThemes);
+});
 
 export function profileOf(profileId: string): ProfileSummary | undefined {
   const { connections, profiles } = useApp.getState();

@@ -5,7 +5,8 @@ const mock = vi.hoisted(() => ({
   edition: 5,
   loginDatabase: 'master',
   failMaster: false,
-  masterError: 4060,
+  masterError: 4060 as number | undefined,
+  masterCode: undefined as string | undefined,
   queries: [] as { database: string; text: string }[],
   closed: [] as string[],
   transactions: [] as string[],
@@ -40,7 +41,7 @@ vi.mock('mssql', async () => {
     constructor(config: { database?: string }) { this.database = config.database || mock.loginDatabase; }
     on() {}
     async connect() {
-      if (mock.failMaster && this.database === 'master') throw Object.assign(new Error('Cannot open database master'), { number: mock.masterError });
+      if (mock.failMaster && this.database === 'master') throw Object.assign(new Error('Cannot open database master'), { number: mock.masterError, code: mock.masterCode });
       return this;
     }
     request() { return new Request(this.database); }
@@ -68,6 +69,7 @@ beforeEach(() => {
   mock.loginDatabase = 'master';
   mock.failMaster = false;
   mock.masterError = 4060;
+  mock.masterCode = undefined;
   mock.queries = [];
   mock.closed = [];
   mock.transactions = [];
@@ -96,6 +98,24 @@ describe('SQL Server database discovery and routing', () => {
     mock.masterError = 1234;
     const conn = mssqlDriver.connect({ ...profile, database: 'app' }, {});
     await expect(conn.listChildren(null)).rejects.toMatchObject({ number: 1234 });
+    await conn.close();
+  });
+
+  it('falls back for ELOGIN without a server number after authenticating to the target database', async () => {
+    mock.failMaster = true;
+    mock.masterError = undefined;
+    mock.masterCode = 'ELOGIN';
+    const conn = mssqlDriver.connect({ ...profile, database: 'app' }, {});
+    expect(await conn.listChildren(null)).toMatchObject([{ name: 'app', detail: 'Database list limited: cannot connect to master' }]);
+    await conn.close();
+  });
+
+  it('does not hide ELOGIN when the configured database is master', async () => {
+    mock.failMaster = true;
+    mock.masterError = undefined;
+    mock.masterCode = 'ELOGIN';
+    const conn = mssqlDriver.connect(profile, {});
+    await expect(conn.listChildren(null)).rejects.toMatchObject({ code: 'ELOGIN' });
     await conn.close();
   });
 

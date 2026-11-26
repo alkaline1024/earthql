@@ -420,7 +420,7 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
           ))}
         </div>
         <section className="conn-about" aria-label="About EarthQL">
-          <img src="./earthql.png" alt="" width={72} height={72} />
+          <img src={import.meta.env.DEV ? "./earthql-dev.png" : "./earthql.png"} alt="" width={72} height={72} />
           <div>
             <div className="conn-about-title"><strong>EarthQL</strong><span className="muted small">v{appVersion}</span></div>
             <p>Your databases, together in one workspace.</p>

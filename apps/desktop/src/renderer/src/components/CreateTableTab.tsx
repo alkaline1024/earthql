@@ -336,7 +336,7 @@ export function CreateTableTab({ tabId, profileId, container, refreshVersion = 0
 
         <div className="row" style={{ margin: '20px 0 8px' }}>
           <b>SQL preview</b>
-          <span className="muted small">Other object types (views, indexes…) can be created from the SQL editor.</span>
+          <span className="muted small">Other object types (views, indexes…) can be created from the SQL Query.</span>
         </div>
         <pre className="sql">{preview?.sql ?? '…'}</pre>
         {preview && (preview.errors.length > 0 || preview.warnings.length > 0) && (

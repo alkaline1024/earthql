@@ -200,7 +200,7 @@ ipcMain.handle('keybindings:apply', (_event, payload: unknown) => {
 
 app.whenReady().then(() => {
   if (!app.isPackaged) {
-    app.dock?.setIcon(path.join(app.getAppPath(), 'src', 'renderer', 'public', 'earthql.png'));
+    app.dock?.setIcon(path.join(app.getAppPath(), 'src', 'renderer', 'public', process.env.ELECTRON_RENDERER_URL ? 'earthql-dev.png' : 'earthql.png'));
   }
   registerIpc(sessions);
   setupUpdates();

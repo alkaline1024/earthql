@@ -122,7 +122,7 @@ regenerate the patch and re-run the integration tests.
 - **Access token**: a PAT or OAuth bearer token, sent as `Authorization: Bearer`. When it expires, edit the token in
   the same profile and reconnect.
 - Test Connection opens a session (waits for a stopped warehouse to start) and runs `SELECT 1`.
-- The SQL editor shows *waiting for warehouse* / *queued* / *running* from the operation state.
+- The SQL Query shows *waiting for warehouse* / *queued* / *running* from the operation state.
 
 ## Feedback
 

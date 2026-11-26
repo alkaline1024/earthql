@@ -214,7 +214,7 @@ export function SqlTab({
   const saveSqlFile = useCallback(async () => {
     const text = editor.current?.getText() ?? '';
     if (!text.trim()) {
-      toast('error', 'The editor is empty.');
+      toast('error', 'Enter a SQL query first.');
       return;
     }
     try {
@@ -392,7 +392,7 @@ export function SqlTab({
             {!runError && results.length === 0 && !run && (
               <div className="state">
                 <p>
-                  Run a query to see results here. {sc.label('run') ? <><Keys keys={sc.label('run')} /> runs</> : 'Run executes'} the selection, or {sqlRunDefault === 'all' ? 'the whole editor' : 'the statement under the cursor'}.
+                  Run a query to see results here. {sc.label('run') ? <><Keys keys={sc.label('run')} /> runs</> : 'Run executes'} the selection, or {sqlRunDefault === 'all' ? 'all statements in the tab' : 'the statement under the cursor'}.
                 </p>
                 {schema?.truncated && <p className="muted small">Autocomplete shows only part of this database (very many columns).</p>}
               </div>

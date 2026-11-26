@@ -379,7 +379,11 @@ class MssqlConnection implements DriverConnection {
       try {
         rows = await this.q(query, [], azure && server.current_database !== 'master' ? 'master' : undefined);
       } catch (e) {
-        if (!azure || server.current_database === 'master' || ![4060, 18456].includes(sqlErrorNumber(e) ?? 0)) throw e;
+        // Some login failures expose only ELOGIN, without a SQL Server number.
+        // The current database already authenticated successfully above; only
+        // discovery through master is optional for a contained Azure login.
+        const masterLoginDenied = [4060, 18456].includes(sqlErrorNumber(e) ?? 0) || (e as any)?.code === 'ELOGIN';
+        if (!azure || server.current_database === 'master' || !masterLoginDenied) throw e;
         rows = await this.q(query);
         limited = true;
       }

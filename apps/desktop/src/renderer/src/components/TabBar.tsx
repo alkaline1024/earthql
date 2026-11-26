@@ -106,11 +106,130 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
     };
   }
 
+  const pointerDrag = useRef<{ id: string; x: number; y: number; width: number; moving: boolean; source: HTMLElement; offsetX: number; offsetY: number; ghost?: HTMLElement } | null>(null);
+
+  useEffect(() => () => pointerDrag.current?.ghost?.remove(), []);
+
+  const pointerTarget = useRef<HTMLElement | null>(null);
+
+  function tabBarAt(x: number, y: number) {
+    return Array.from(document.querySelectorAll<HTMLElement>('[data-tab-bar-pane]')).find((bar) => {
+      const rect = bar.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    }) ?? null;
+  }
+
+  function panelAt(x: number, y: number) {
+    return document.elementFromPoint(x, y)?.closest<HTMLElement>('[data-tab-drop-pane]') ?? null;
+  }
+
+  function workspaceEdgeAt(x: number, y: number) {
+    const workspace = barRef.current?.closest<HTMLElement>('.main-split');
+    if (!workspace) return null;
+    const rect = workspace.getBoundingClientRect();
+    if (x < rect.left || x >= rect.right || y < rect.top || y >= rect.bottom) return null;
+    const left = x - rect.left;
+    const right = rect.right - x;
+    const bottom = rect.bottom - y;
+    const distance = Math.min(left, right, bottom);
+    if (distance > 36) return null;
+    const side = distance === bottom ? 'down' : distance === left ? 'left' : 'right';
+    return { workspace, side } as const;
+  }
+
+  function markPointerTarget(target: HTMLElement | null, edge = '') {
+    if (pointerTarget.current === target && target?.getAttribute('data-pointer-drop') === edge) return;
+    pointerTarget.current?.removeAttribute('data-pointer-drop');
+    pointerTarget.current = target;
+    target?.setAttribute('data-pointer-drop', edge);
+  }
+
+  function updatePointerDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = pointerDrag.current;
+    if (!drag || !(event.buttons & 1)) return;
+    if (!drag.moving && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
+    if (!drag.moving) {
+      drag.moving = true;
+      measureSlots(drag.id);
+      const ghost = drag.source.cloneNode(true) as HTMLElement;
+      ghost.removeAttribute('data-tab-id');
+      ghost.classList.remove('dragging-source');
+      ghost.classList.add('tab-drag-ghost');
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.inert = true;
+      ghost.style.width = `${drag.width}px`;
+      document.body.appendChild(ghost);
+      drag.ghost = ghost;
+      setMenu(null);
+      setCloseTip(null);
+      setDraggedTabId(drag.id, drag.width);
+    }
+    if (drag.ghost) {
+      drag.ghost.style.transform = `translate(${event.clientX - drag.offsetX}px, ${event.clientY - drag.offsetY}px)`;
+    }
+    const edge = workspaceEdgeAt(event.clientX, event.clientY);
+    if (edge) {
+      markPointerTarget(edge.workspace, edge.side);
+      setDropTarget(null);
+      return;
+    }
+    const destination = tabBarAt(event.clientX, event.clientY);
+    const panel = destination ? null : panelAt(event.clientX, event.clientY);
+    markPointerTarget(destination !== barRef.current ? destination ?? panel : null);
+    if (destination !== barRef.current) {
+      setDropTarget(null);
+      return;
+    }
+    const snapshot = dragSlots.current;
+    if (!snapshot) return;
+    const strip = barRef.current?.querySelector('.tabs');
+    setDropTarget(tabInsertionTarget(snapshot.slots, event.clientX + (strip?.scrollLeft ?? 0) - snapshot.scroll));
+  }
+
+  function finishPointerDrag(event: React.PointerEvent<HTMLDivElement>, cancelled = false) {
+    const drag = pointerDrag.current;
+    pointerDrag.current = null;
+    drag?.ghost?.remove();
+    if (!drag?.moving) return;
+    markPointerTarget(null);
+    const edge = cancelled ? null : workspaceEdgeAt(event.clientX, event.clientY);
+    const destination = cancelled || edge ? null : tabBarAt(event.clientX, event.clientY);
+    if (edge) openSplit(drag.id, edge.side);
+    else if (destination) {
+      const samePane = destination === barRef.current;
+      const strip = destination.querySelector('.tabs');
+      const snapshot = dragSlots.current;
+      const slots = samePane && snapshot ? snapshot.slots :
+        Array.from(destination.querySelectorAll<HTMLElement>('[data-tab-id]'))
+          .filter((element) => element.dataset.tabId !== drag.id)
+          .map((element) => {
+            const rect = element.getBoundingClientRect();
+            return { id: element.dataset.tabId!, center: rect.left + rect.width / 2 };
+          });
+      const x = event.clientX + (samePane && snapshot ? (strip?.scrollLeft ?? 0) - snapshot.scroll : 0);
+      const target = tabInsertionTarget(slots, x);
+      const destinationPane = destination.dataset.tabBarPane === 'split' ? 'split' : 'main';
+      if (!samePane) moveTabToPane(drag.id, destinationPane);
+      moveTabsToGroup([drag.id], target.id ? groupOf.get(target.id)?.id ?? null : null);
+      if (target.id) moveTab(drag.id, target.id, target.after);
+    } else if (!cancelled) {
+      const panel = panelAt(event.clientX, event.clientY);
+      if (panel) {
+        moveTabToPane(drag.id, panel.dataset.tabDropPane === 'split' ? 'split' : 'main');
+        activateTab(drag.id);
+      }
+    }
+    setDraggedTabId(null);
+    setDropTarget(null);
+    dragSlots.current = null;
+  }
+
   function updateDrop(event: DragEvent<HTMLDivElement>) {
-    if (!draggedTabId || !event.dataTransfer.types.includes('application/x-earthql-tab')) return;
+    const sourceId = useApp.getState().draggedTabId;
+    if (!sourceId || !event.dataTransfer.types.includes('application/x-earthql-tab')) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = 'move';
-    if (dragSlots.current?.id !== draggedTabId) measureSlots(draggedTabId);
+    if (dragSlots.current?.id !== sourceId) measureSlots(sourceId);
     const strip = barRef.current?.querySelector<HTMLElement>('.tabs');
     const bounds = strip?.getBoundingClientRect();
     if (strip && bounds) {
@@ -129,7 +248,7 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
     if (!id) return;
     event.preventDefault();
     event.stopPropagation();
-    moveTabToPane(id, pane);
+    if (!tabs.some((tab) => tab.id === id)) moveTabToPane(id, pane);
     const target = dropTarget ?? { id: tabs.filter((tab) => tab.id !== id).at(-1)?.id ?? null, after: true };
     moveTabsToGroup([id], target.id ? groupOf.get(target.id)?.id ?? null : null);
     if (target.id) moveTab(id, target.id, target.after);
@@ -237,38 +356,21 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
       {dropTarget?.id === tab.id && !dropTarget.after && dropSlot()}
       <div
         data-tab-id={tab.id}
-        className={`tab${tab.id === activeTabId ? ' active' : ''}${draggedTabId === tab.id ? ' dragging-source' : ''}`}
+        className={`tab no-drag${tab.id === activeTabId ? ' active' : ''}${draggedTabId === tab.id ? ' dragging-source' : ''}`}
         style={{ '--env': profile?.env.color ?? 'transparent', ...(draggedTabId === tab.id ? { width: draggedTabWidth } : {}) } as CSSProperties}
-        draggable
+        onPointerDown={(event) => {
+          if (event.button !== 0 || event.ctrlKey || (event.target instanceof Element && event.target.closest('button'))) return;
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          pointerDrag.current = {
+            id: tab.id, x: event.clientX, y: event.clientY, width: rect.width, moving: false,
+            source: event.currentTarget, offsetX: event.clientX - rect.left, offsetY: event.clientY - rect.top,
+          };
+          barRef.current?.setPointerCapture(event.pointerId);
+          activateTab(tab.id);
+        }}
         onMouseDown={(event) => {
           if (event.button === 1) closeTab(tab.id);
-          if (event.button === 0 && !event.ctrlKey) activateTab(tab.id);
-        }}
-        onDragStart={(event) => {
-          event.dataTransfer.effectAllowed = 'move';
-          event.dataTransfer.setData('text/plain', tab.id);
-          event.dataTransfer.setData('application/x-earthql-tab', tab.id);
-          const rect = event.currentTarget.getBoundingClientRect();
-          const image = event.currentTarget.cloneNode(true) as HTMLElement;
-          image.className = 'tab active';
-          Object.assign(image.style, { position: 'fixed', left: '-10000px', top: '0', width: `${rect.width}px`, maxWidth: 'none', margin: '0' });
-          document.body.appendChild(image);
-          event.dataTransfer.setDragImage(image, event.clientX - rect.left, event.clientY - rect.top);
-          requestAnimationFrame(() => image.remove());
-          measureSlots(tab.id);
-          const remaining = tabs.filter((item) => item.id !== tab.id);
-          const index = tabs.findIndex((item) => item.id === tab.id);
-          const following = tabs.slice(index + 1).find((item) => item.id !== tab.id);
-          setDropTarget(following ? { id: following.id, after: false } : { id: remaining.at(-1)?.id ?? null, after: true });
-          setMenu(null);
-          setDraggedTabId(tab.id, rect.width);
-          setCloseTip(null);
-        }}
-        onDragEnd={() => {
-          setDraggedTabId(null);
-
-          setDropTarget(null);
-          setDragGroupId(null);
         }}
         title={`${connectionName(tab.profileId)}${profile?.env.name ? ` (${profile.env.name})` : ''} — ${detail}`}
       >
@@ -303,7 +405,8 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
 
   return (
     <>
-      <div className="main-top drag" ref={barRef} onDragOver={updateDrop} onDrop={finishDrop}
+      <div className="main-top drag" data-tab-bar-pane={pane} ref={barRef} onDragOver={updateDrop} onDrop={finishDrop}
+        onPointerMove={updatePointerDrag} onPointerUp={finishPointerDrag} onPointerCancel={(event) => finishPointerDrag(event, true)} onLostPointerCapture={(event) => finishPointerDrag(event, true)}
         onDragLeave={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           if (event.clientX < rect.left || event.clientX >= rect.right || event.clientY < rect.top || event.clientY >= rect.bottom) {

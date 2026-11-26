@@ -77,7 +77,7 @@ export function QueryLibrary({
     if (!saving?.name.trim()) return;
     const sql = getText();
     if (!sql.trim()) {
-      toast('error', 'The editor is empty.');
+      toast('error', 'Enter a SQL query first.');
       return;
     }
     const item = await api.saved.save(profileId, { id: asNew ? '' : (saving.id ?? ''), name: saving.name.trim(), sql, context: ctx });

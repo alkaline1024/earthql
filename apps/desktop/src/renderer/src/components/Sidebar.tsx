@@ -1,3 +1,4 @@
+import { THEME_OPTIONS } from '../themes';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { describePath, DRIVER_LABELS, type ErrorInfo, type ObjectPath, type TreeNode } from '@earthql/core';
 import { api, errorInfo, uid } from '../api';
@@ -33,7 +34,7 @@ export function treeNodeFullPath(node: TreeNode): string {
   return describePath(node.hasChildren ? nodePathAsContainer(node) : node.path);
 }
 
-export function Sidebar() {
+export function Sidebar({ hidden = false }: { hidden?: boolean }) {
   const sidebarWidth = useApp((s) => s.sidebarWidth);
   const sc = useShortcuts();
   const section = useApp((s) => s.sidebarSection);
@@ -129,7 +130,7 @@ export function Sidebar() {
   }
 
   return (
-    <aside className={`sidebar${showSwitcher ? ' sidebar-with-switcher' : ''}`} style={{ width: sidebarWidth }}>
+    <aside id="workspace-sidebar" hidden={hidden} className={`sidebar${showSwitcher ? ' sidebar-with-switcher' : ''}`} style={{ width: sidebarWidth }}>
       <SidebarResizeHandle />
       <div className="sidebar-top drag">
         <span className="spacer" />
@@ -318,7 +319,10 @@ export function Sidebar() {
             {'tls' in menuProfile && <><dt>TLS mode</dt><dd>{menuProfile.tls.mode}</dd></>}
           </dl>
           <label className="row">Theme<select className="select grow" value={theme} onChange={(event) => setTheme(event.target.value as Theme)}>
-            {(['system', 'light', 'dark', 'white', 'slate', 'sepia'] as const).map((value) => <option key={value} value={value}>{value === 'system' ? 'Auto' : value[0].toUpperCase() + value.slice(1)}</option>)}
+            <option value="system">Auto</option>
+            {(['light', 'dark'] as const).map((group) => <optgroup key={group} label={group === 'light' ? 'Light themes' : 'Dark themes'}>
+              {THEME_OPTIONS.filter((option) => option.group === group).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </optgroup>)}
           </select></label>
           <div className="row sidebar-connection-details-actions">
             <button type="button" className="btn" onClick={() => { setConnectionMenu(null); void disconnect(connectionMenu.sessionId); }}>Disconnect</button>
@@ -1185,7 +1189,7 @@ export function TreeItem({ profileId, node, depth, filter, onSeparate }: { profi
           )}
           {(!node.hasChildren || tableContainer) && <TableGroupMenu nodes={node.hasChildren ? [] : selectedNodes}
             node={node.hasChildren ? undefined : node} scope={tableGroupContainer(container)} onClose={() => setMenu(null)} />}
-          <MenuItem label="New SQL editor here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
+          <MenuItem label="New SQL Query here" onClick={() => (setMenu(null), newSqlTab(profileId, '', sqlContext()))} />
           {!node.hasChildren && (
             <>
               <MenuItem label={allSelectedFavorite ? 'Remove from Bookmarks' : 'Add to Bookmarks'}

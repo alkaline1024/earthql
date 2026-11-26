@@ -94,9 +94,29 @@ export function App() {
   const editProfileId = useApp((s) => s.editProfileId);
   const [newRequested, setNewRequested] = useState(0);
   const [feedback, setFeedback] = useState<{ screenshot: string | null } | null>(null);
+  const [sidebarHidden, setSidebarHidden] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [splitWidth, setSplitWidth] = useState<number | null>(null);
   const [splitHeight, setSplitHeight] = useState<number | null>(null);
+  const activeTab = tabs.find((tab) => tab.id === activeTabId);
+  const formatFooterShortcut = (command: string, id: string) => {
+    const shortcut = sc.label(id);
+    return shortcut ? `${shortcut} : ${command}` : '';
+  };
+  const footerHint = screen === 'connections' ? formatFooterShortcut('New connection', 'new-connection')
+    : activeTab?.kind === 'sql' ? formatFooterShortcut('Run current statement', 'run')
+    : activeTab?.kind === 'table' ? activeTab.initialView === 'structure'
+      ? formatFooterShortcut('Refresh structure', 'refresh') : '⌘F : Filter rows'
+    : '';
+  const hasWorkspace = useApp((state) => Object.keys(state.connections).length > 0);
+  const footerHints = [
+    footerHint,
+    screen === 'workspace' ? formatFooterShortcut('Open SQL Query', 'new-sql-tab') : '',
+    screen === 'workspace' ? formatFooterShortcut('Reopen Closed Tab', 'reopen-closed-tab') : '',
+    screen === 'connections' && hasWorkspace ? formatFooterShortcut('Workspace', 'close-tab') : '',
+    screen === 'workspace' && (activeTab || !tabs.length)
+      ? formatFooterShortcut(activeTab ? 'Close Tab' : 'Connections', 'close-tab') : '',
+  ].filter(Boolean);
   const mainTabId = splitPane ? splitPane.mainTabId : activeTabId;
   const mainTabs = tabs.filter((tab) => !splitPane?.tabIds.includes(tab.id));
   const mainSplitRef = useRef<HTMLDivElement>(null);
@@ -158,7 +178,12 @@ export function App() {
           setNewRequested((n) => n + 1);
         }
         if (cmd === 'new-sql-tab' && s.activeProfileId && s.connections[s.activeProfileId]) s.newSqlTab(s.activeProfileId);
-        if (cmd === 'close-tab' && s.activeTabId && s.screen === 'workspace') s.closeTab(s.activeTabId);
+        if (cmd === 'close-tab') {
+          if (s.screen === 'connections') {
+            if (Object.keys(s.connections).length > 0) s.setScreen('workspace');
+          } else if (s.activeTabId) s.closeTab(s.activeTabId);
+          else if (!s.tabs.length) s.setScreen('connections');
+        }
         if (cmd === 'close-all-tabs' && s.screen === 'workspace') s.closeTabs(s.tabs.map(({ id }) => id));
         if (cmd === 'reopen-closed-tab' && s.screen === 'workspace') s.reopenClosedTab();
         if (cmd === 'reconnect' && s.screen === 'workspace' && s.activeProfileId && s.connections[s.activeProfileId] && !s.connecting[s.activeProfileId]) {
@@ -194,13 +219,14 @@ export function App() {
 
   return (
     <div className="app">
+      {import.meta.env.DEV && <div className="dev-corner" aria-label="Developer Mode"><span>DEV</span></div>}
       <div className="app-content">
       {screen === 'connections' ? (
         <ConnectionsScreen key={newRequested} initialNew={!editProfileId && newRequested > 0} initialProfileId={editProfileId} />
       ) : (
         <>
-          <Sidebar />
-          <main className="main">
+          <Sidebar hidden={sidebarHidden} />
+          <main className={sidebarHidden ? "main sidebar-collapsed" : "main"}>
             <div className={`main-split${splitPane ? ' has-split' : ''}${splitVertical ? ' vertical' : ''}`} ref={mainSplitRef}>
               {splitFirst && <>{splitPaneEl}{splitDividerEl}</>}
               <div className={`workspace-panel${focusedPane === 'main' ? ' focused' : ''}`} onPointerDownCapture={(event) => { if (!(event.target instanceof Element && event.target.closest('.new-sql-tab'))) focusPane('main'); }}
@@ -211,11 +237,11 @@ export function App() {
                 {mainTabs.length === 0 && (
                   <div className="welcome" style={{ height: '100%' }}>
                     <h2>{activeProfileId ? connectionName(activeProfileId) : 'EarthQL'}</h2>
-                    <p>Pick a table or view in the sidebar, or open a SQL editor.</p>
+                    <p>Pick a table or view in the sidebar, or open a SQL query.</p>
                     <div className="row">
                       {activeProfileId && (
                         <button className="btn primary" onClick={() => newSqlTab(activeProfileId)}>
-                          New SQL editor
+                          New SQL Query
                         </button>
                       )}
                       <button className="btn" onClick={() => setScreen('connections')}>
@@ -239,6 +265,16 @@ export function App() {
       )}
       </div>
       <footer className="app-footer">
+        <span className="footer-shortcut-hint">
+          {footerHints.map((hint) => <span key={hint}>{hint}</span>)}
+        </span>
+        {screen === 'workspace' && <button type="button" className="btn small ghost no-drag"
+          aria-label={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'} title={sidebarHidden ? 'Show sidebar' : 'Hide sidebar'}
+          aria-controls="workspace-sidebar" aria-expanded={!sidebarHidden} onClick={() => setSidebarHidden(!sidebarHidden)}>
+          <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor">
+            <rect x="1.5" y="2.5" width="13" height="11" rx="2" /><path d="M6 3v10" />
+          </svg>
+        </button>}
         <button className="btn small ghost no-drag" aria-keyshortcuts={sc.aria('open-settings')} onClick={() => setSettingsOpen(true)}>
           <GearIcon /> Settings
         </button>

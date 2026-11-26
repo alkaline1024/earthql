@@ -14,7 +14,7 @@ export const SHORTCUT_CATEGORIES = [
   'Query',
   'View',
   'Tables',
-  'SQL editor',
+  'SQL Query',
   'Data grid',
   'Lists & sidebar',
   'System',
@@ -61,7 +61,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'dismiss', label: 'Close dialog, menu or popup', category: 'General', kind: 'fixed', keys: '⎋' },
 
   // Tabs
-  { id: 'new-sql-tab', label: 'New SQL query tab', menuLabel: 'New SQL Editor Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+T', command: 'new-sql-tab' },
+  { id: 'new-sql-tab', label: 'New SQL query tab', menuLabel: 'New SQL Query Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+T', command: 'new-sql-tab' },
   { id: 'reopen-closed-tab', label: 'Reopen closed tab', menuLabel: 'Reopen Closed Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+T', command: 'reopen-closed-tab', note: 'Remembers the last 25 closed tabs.' },
   { id: 'close-tab', label: 'Close tab', menuLabel: 'Close Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+W', command: 'close-tab' },
   { id: 'close-all-tabs', label: 'Close all tabs', menuLabel: 'Close All Tabs', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+W', command: 'close-all-tabs' },
@@ -83,23 +83,23 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'refresh', label: 'Refresh tab', menuLabel: 'Refresh', category: 'View', kind: 'menu', accelerator: 'CmdOrCtrl+R', command: 'refresh' },
   { id: 'split-left', label: 'Split left', menuLabel: 'Split Left', category: 'View', kind: 'menu', accelerator: 'CmdOrCtrl+[', command: 'split-left' },
   { id: 'split-right', label: 'Split right', menuLabel: 'Split Right', category: 'View', kind: 'menu', accelerator: 'CmdOrCtrl+]', command: 'split-right' },
-  { id: 'split-up', label: 'Split up', menuLabel: 'Split Up', category: 'View', kind: 'menu', command: 'split-up' },
-  { id: 'split-down', label: 'Split down', menuLabel: 'Split Down', category: 'View', kind: 'menu', command: 'split-down' },
+  { id: 'split-up', label: 'Split up', menuLabel: 'Split Up', category: 'View', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+[', command: 'split-up' },
+  { id: 'split-down', label: 'Split down', menuLabel: 'Split Down', category: 'View', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+]', command: 'split-down' },
 
   // Tables (focus must be on a table in the sidebar)
   { id: 'table-delete', label: 'Delete selected tables', category: 'Tables', kind: 'app', accelerator: 'CmdOrCtrl+Backspace', note: 'With a table focused in the sidebar.' },
   { id: 'table-truncate', label: 'Truncate selected tables', category: 'Tables', kind: 'app', accelerator: 'Alt+Backspace', note: 'With a table focused in the sidebar.' },
 
-  // SQL editor (CodeMirror)
-  { id: 'editor-accept-completion', label: 'Accept autocomplete suggestion', category: 'SQL editor', kind: 'fixed', keys: '⇥', note: 'Indents when no suggestion is showing.' },
-  { id: 'editor-outdent', label: 'Outdent', category: 'SQL editor', kind: 'fixed', keys: '⇧⇥' },
-  { id: 'editor-complete', label: 'Show autocomplete', category: 'SQL editor', kind: 'fixed', accelerator: 'Ctrl+Space' },
-  { id: 'editor-undo', label: 'Undo', category: 'SQL editor', kind: 'fixed', accelerator: 'CmdOrCtrl+Z' },
-  { id: 'editor-redo', label: 'Redo', category: 'SQL editor', kind: 'fixed', accelerator: 'CmdOrCtrl+Shift+Z' },
-  { id: 'editor-find', label: 'Find', category: 'SQL editor', kind: 'fixed', accelerator: 'CmdOrCtrl+F' },
-  { id: 'editor-comment', label: 'Toggle comment', category: 'SQL editor', kind: 'fixed', accelerator: 'CmdOrCtrl+/' },
-  { id: 'editor-move-line-up', label: 'Move line up', category: 'SQL editor', kind: 'fixed', accelerator: 'Alt+Up' },
-  { id: 'editor-move-line-down', label: 'Move line down', category: 'SQL editor', kind: 'fixed', accelerator: 'Alt+Down' },
+  // SQL Query (CodeMirror)
+  { id: 'editor-accept-completion', label: 'Accept autocomplete suggestion', category: 'SQL Query', kind: 'fixed', keys: '⇥', note: 'Indents when no suggestion is showing.' },
+  { id: 'editor-outdent', label: 'Outdent', category: 'SQL Query', kind: 'fixed', keys: '⇧⇥' },
+  { id: 'editor-complete', label: 'Show autocomplete', category: 'SQL Query', kind: 'fixed', accelerator: 'Ctrl+Space' },
+  { id: 'editor-undo', label: 'Undo', category: 'SQL Query', kind: 'fixed', accelerator: 'CmdOrCtrl+Z' },
+  { id: 'editor-redo', label: 'Redo', category: 'SQL Query', kind: 'fixed', accelerator: 'CmdOrCtrl+Shift+Z' },
+  { id: 'editor-find', label: 'Find', category: 'SQL Query', kind: 'fixed', accelerator: 'CmdOrCtrl+F' },
+  { id: 'editor-comment', label: 'Toggle comment', category: 'SQL Query', kind: 'fixed', accelerator: 'CmdOrCtrl+/' },
+  { id: 'editor-move-line-up', label: 'Move line up', category: 'SQL Query', kind: 'fixed', accelerator: 'Alt+Up' },
+  { id: 'editor-move-line-down', label: 'Move line down', category: 'SQL Query', kind: 'fixed', accelerator: 'Alt+Down' },
 
   // Data grid: Copy As shortcuts are unbound until configured in Settings.
   ...(['cells', 'rows'] as const).flatMap((scope) => GRID_COPY_FORMATS.map(({ format, label }): ShortcutDef => ({

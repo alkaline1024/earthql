@@ -29,14 +29,14 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('UI style preference', () => {
-  it('defaults to Classic for missing or invalid values', async () => {
+  it('defaults to Modern for missing or invalid values', async () => {
     let app = await loadStore();
-    expect(app.getState().uiStyle).toBe('classic');
-    expect(dataset.uiStyle).toBe('classic');
+    expect(app.getState().uiStyle).toBe('modern');
+    expect(dataset.uiStyle).toBe('modern');
     storage.set('earthql.uiStyle', 'unknown');
     app = await loadStore();
-    expect(app.getState().uiStyle).toBe('classic');
-    expect(dataset.uiStyle).toBe('classic');
+    expect(app.getState().uiStyle).toBe('modern');
+    expect(dataset.uiStyle).toBe('modern');
   });
 
   it('persists and restores Modern independently of the color theme', async () => {

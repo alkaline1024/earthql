@@ -3,16 +3,11 @@ import { LIMITS, NO_LIMIT, type Theme, type UiStyle, useApp } from '../store';
 import { Modal } from './common';
 import { ShortcutSettings } from './ShortcutSettings';
 
-const THEME_OPTIONS: { id: Theme; label: string; bg: string; primary?: string; split?: boolean }[] = [
-  { id: 'system', label: 'System', bg: 'linear-gradient(135deg, #f5f6f3 50%, #202723 50%)', split: true },
-  { id: 'light', label: 'Light', bg: '#f5f6f3', primary: '#34745c' },
-  { id: 'dark', label: 'Dark', bg: '#202723', primary: '#85bda3' },
-  { id: 'white', label: 'White', bg: '#ffffff', primary: '#2f6fed' },
-  { id: 'slate', label: 'Slate', bg: '#eef0f5', primary: '#5b6ee8' },
-  { id: 'sepia', label: 'Sepia', bg: '#f6efe2', primary: '#9c6b2e' },
-];
+import { THEME_OPTIONS } from '../themes';
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
+  const autoThemes = useApp((s) => s.autoThemes);
+  const setAutoTheme = useApp((s) => s.setAutoTheme);
   const theme = useApp((s) => s.theme);
   const setTheme = useApp((s) => s.setTheme);
   const uiStyle = useApp((s) => s.uiStyle);
@@ -55,8 +50,12 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
             ))}
           </div>
           <h4 className="theme-heading">Color theme</h4>
-          <div className="theme-swatch-grid" role="radiogroup" aria-label="Theme">
-            {THEME_OPTIONS.map((t) => (
+          <div role="radiogroup" aria-label="Color theme">
+            {(['auto', 'light', 'dark'] as const).map((group) => (
+              <div key={group} role="group" aria-label={group} className="theme-option-group">
+                <h5>{group === 'auto' ? 'Appearance' : group === 'light' ? 'Light themes' : 'Dark themes'}</h5>
+                <div className="theme-swatch-grid">
+            {THEME_OPTIONS.filter((t) => t.group === group).map((t) => (
               <button
                 key={t.id}
                 type="button"
@@ -67,17 +66,30 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
               >
                 <span
                   className={`theme-swatch-preview${t.split ? ' split' : ''}`}
-                  style={{ '--swatch-bg': t.bg, '--swatch-primary': t.primary } as CSSProperties}
+                  style={{ '--swatch-bg': t.split ? `linear-gradient(135deg, ${THEME_OPTIONS.find((o) => o.id === autoThemes.light)?.bg} 50%, ${THEME_OPTIONS.find((o) => o.id === autoThemes.dark)?.bg} 50%)` : t.bg, '--swatch-primary': t.primary } as CSSProperties}
                 />
                 <span className="theme-swatch-label">{t.label}</span>
               </button>
             ))}
+                </div>
+                {group === 'auto' && <>
+                  <p className="muted small">Auto follows your Mac’s light or dark appearance.</p>
+                  <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+                    {(['light', 'dark'] as const).map((mode) => <label className="row" key={mode}>
+                      {mode === 'light' ? 'Light theme' : 'Dark theme'}
+                      <select className="select" value={autoThemes[mode]} onChange={(event) => setAutoTheme(mode, event.target.value as Theme)}>
+                        {THEME_OPTIONS.filter((option) => option.group === mode).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                      </select>
+                    </label>)}
+                  </div>
+                </>}
+              </div>
+            ))}
           </div>
-          <p className="muted small" style={{ marginTop: 8 }}>“System” follows your Mac's light/dark appearance automatically.</p>
         </section>
 
         <section>
-          <h3 className="settings-h">SQL Editor</h3>
+          <h3 className="settings-h">SQL Query</h3>
           <div className="col" style={{ gap: 12 }}>
             <label className="row" style={{ justifyContent: 'space-between' }}>
               <span>Default row limit for new SQL tabs</span>
