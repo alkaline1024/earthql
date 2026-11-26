@@ -2,8 +2,12 @@ import { app, BrowserWindow, Menu, shell, ipcMain } from 'electron';
 import path from 'node:path';
 import { registerIpc } from './ipc';
 import { SessionManager } from './sessions';
+import { setupActivity } from './activity';
 import { createUpdateCheck } from './updates';
 import { SHORTCUTS, effectiveAccelerator, matchesAccelerator, sanitizeOverrides, type KeybindingOverrides } from '../shared/keybindings';
+
+declare const __EARTHQL_DEV_ACTIVITY_PREVIEW__: boolean;
+declare const __EARTHQL_DEV_ACTIVITY_SEND__: boolean;
 
 app.setName('EarthQL');
 // Chromium's swipe-to-navigate-pages gesture intercepts two-finger horizontal trackpad
@@ -140,6 +144,7 @@ function buildMenu(): void {
         item('reopen-closed-tab'),
         { type: 'separator' },
         item('close-tab'),
+        item('close-other-tabs'),
         item('close-all-tabs'),
       ],
     },
@@ -204,6 +209,7 @@ app.whenReady().then(() => {
   }
   registerIpc(sessions);
   setupUpdates();
+  setupActivity({ preview: __EARTHQL_DEV_ACTIVITY_PREVIEW__, send: __EARTHQL_DEV_ACTIVITY_SEND__ });
   buildMenu();
   createWindow();
   app.on('activate', () => {

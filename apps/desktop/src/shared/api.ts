@@ -167,6 +167,7 @@ export interface TableImportResult {
 
 export interface UpdateStatus { available: boolean; busy: boolean; downloadPercent: number | null; }
 
+
 export interface EarthQLApi {
   revealFile(path: string): Promise<void>;
   backup: {
@@ -189,6 +190,7 @@ export interface EarthQLApi {
   platform: string;
   profiles: {
     postUpdateKeychain(): Promise<string[]>;
+    dismissPostUpdateKeychain(): Promise<void>;
     authorizeKeychain(id: string): Promise<void>;
     setDefaultDatabase(profileId: string, database: string): Promise<ProfileSummary>;
     list(): Promise<ProfileSummary[]>;

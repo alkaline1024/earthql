@@ -42,6 +42,7 @@ export const api: EarthQLApi = {
   },
   profiles: {
     postUpdateKeychain: () => call('profiles:postUpdateKeychain'),
+    dismissPostUpdateKeychain: () => call('profiles:dismissPostUpdateKeychain'),
     authorizeKeychain: (id) => call('profiles:authorizeKeychain', id),
     setDefaultDatabase: (id, database) => call('profiles:setDefaultDatabase', id, database),
     list: () => call('profiles:list'),

@@ -64,6 +64,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { id: 'new-sql-tab', label: 'New SQL query tab', menuLabel: 'New SQL Query Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+T', command: 'new-sql-tab' },
   { id: 'reopen-closed-tab', label: 'Reopen closed tab', menuLabel: 'Reopen Closed Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+T', command: 'reopen-closed-tab', note: 'Remembers the last 25 closed tabs.' },
   { id: 'close-tab', label: 'Close tab', menuLabel: 'Close Tab', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+W', command: 'close-tab' },
+  { id: 'close-other-tabs', label: 'Close other tabs', menuLabel: 'Close Other Tabs', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+O', command: 'close-other-tabs' },
   { id: 'close-all-tabs', label: 'Close all tabs', menuLabel: 'Close All Tabs', category: 'Tabs', kind: 'menu', accelerator: 'CmdOrCtrl+Shift+W', command: 'close-all-tabs' },
 
   // Connections
@@ -110,13 +111,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     note: format === 'insert' ? 'With a grid selection in a table that supports INSERT statements.' : 'With a selection focused in the data grid.',
   }))),
   { id: 'grid-copy', label: 'Copy rows', category: 'Data grid', kind: 'fixed', keys: '⌘C', note: 'Copies every column of the selected rows.' },
-  { id: 'grid-add-row', label: 'Add row', category: 'Data grid', kind: 'app', note: 'Stages a new row until Save.' },
+  { id: 'grid-add-row', label: 'Add row', category: 'Data grid', kind: 'app', accelerator: 'CmdOrCtrl+Shift+=', note: 'Stages a new row until Save.' },
   { id: 'grid-duplicate-rows', label: 'Duplicate rows', category: 'Data grid', kind: 'app', accelerator: 'CmdOrCtrl+D', note: 'Stages copies of the selected rows until Save.' },
   { id: 'grid-delete-rows', label: 'Delete rows', category: 'Data grid', kind: 'app', accelerator: 'Backspace', note: 'Marks selected rows for deletion on Save; text editing keeps native deletion.' },
   { id: 'grid-paste-rows', label: 'Paste rows', category: 'Data grid', kind: 'fixed', keys: '⌘V', note: 'Copied rows are staged as new rows in a table. Text editing keeps native paste.' },
   { id: 'grid-paste-fill', label: 'Paste into selected cells', category: 'Data grid', kind: 'app', accelerator: 'CmdOrCtrl+Shift+V' },
   { id: 'grid-select-all', label: 'Select all cells', category: 'Data grid', kind: 'fixed', keys: '⌘A', note: 'With a cell selection focused in the grid. Selects all loaded rows and columns.' },
   { id: 'grid-open', label: 'Quick Look / edit cell', category: 'Data grid', kind: 'fixed', keys: '↵ F2' },
+  { id: 'grid-tab', label: 'Next / previous cell', category: 'Data grid', kind: 'fixed', keys: '⇥ ⇧⇥', note: 'Wraps across rows; continues editing in editable cells. Stays in the grid at the first and last cell.' },
   { id: 'grid-move', label: 'Move selection', category: 'Data grid', kind: 'fixed', keys: '↑ ↓ ← →' },
   { id: 'grid-extend', label: 'Extend selection', category: 'Data grid', kind: 'fixed', keys: '⇧↑ ⇧↓ ⇧← ⇧→', note: 'Or ⇧-click, or drag with the mouse.' },
   { id: 'grid-edit-commit', label: 'Finish editing a cell', category: 'Data grid', kind: 'fixed', keys: '↵' },
@@ -201,7 +203,7 @@ export function toSymbols(accelerator: string): string {
   if (!normalized) return accelerator;
   const parts = normalized.split('+');
   const key = parts.pop()!;
-  return parts.map((m) => SYMBOL_FOR_MODIFIER[m as keyof typeof SYMBOL_FOR_MODIFIER]).join('') + (SYMBOL_FOR_KEY[key] ?? key);
+  return parts.map((m) => SYMBOL_FOR_MODIFIER[m as keyof typeof SYMBOL_FOR_MODIFIER]).join('') + (key === '=' && parts.includes('Shift') ? '+' : SYMBOL_FOR_KEY[key] ?? key);
 }
 
 const MODIFIER_SYMBOLS = '⌘⌃⌥⇧';

@@ -39,7 +39,7 @@ if ! /bin/mv "$candidate" "$installed"; then
   /bin/mv "$backup" "$installed" || true
   fail
 fi
-if ! /usr/bin/open "$installed"; then
+if ! /usr/bin/open "$installed" --args "--earthql-updated-from=$installed_version"; then
   if /bin/mv "$installed" "$candidate"; then /bin/mv "$backup" "$installed" || true; fi
   fail
 fi

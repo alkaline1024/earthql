@@ -25,7 +25,7 @@ Run this only for initial setup. Installed versions trust the embedded public ke
 
 ## Ship a version
 
-1. Bump the desktop workspace version with a stable version such as `npm version 0.1.1 -w @earthql/desktop --no-git-tag-version`. Commit the desktop manifest and lockfile with the release changes.
+1. Run `npm run version:desktop` and choose the next stable desktop version. Choose **No** to review and commit the manifest and lockfile with your release changes, then create the matching tag. Choose **Yes** from a clean working tree to commit the version bump and create the tag locally.
 2. Push the matching tag, such as `v0.1.1`. The workflow builds the app, verifies ad-hoc signing, signs the update manifest, and creates a draft.
 3. Review and publish the draft on [GitHub Releases](https://github.com/alkaline1024/earthql/releases). Keep the DMG, ZIP and `earthql-update.json` together. The updater reads public release assets, so team members need no GitHub token. Roll forward with a higher version if a published build needs a fix.
 

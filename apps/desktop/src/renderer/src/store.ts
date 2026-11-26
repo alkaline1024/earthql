@@ -14,7 +14,7 @@ export interface LiveConnection extends OpenConnection {
   status: 'connected' | 'lost';
 }
 
-export type Tab = { customTitle?: string; refreshVersion?: number } & (
+export type Tab = { customTitle?: string; refreshVersion?: number; preview?: boolean } & (
   | { id: string; kind: 'table'; profileId: string; object: ObjectPath; objectKind: ObjectKind; initialView?: 'data' | 'structure'; initialFilters?: Filter[] }
   | { id: string; kind: 'sql'; profileId: string; title: string; initialSql: string; context: ExecContext }
   | { id: string; kind: 'create'; profileId: string; container: Partial<ObjectPath> }
@@ -167,6 +167,7 @@ interface AppState {
   setScreen(s: AppState['screen']): void;
   setActiveProfile(id: string): void;
   openTab(tab: NewTab): string;
+  keepTab(id: string): void;
   setTableView(id: string, view: 'data' | 'structure'): void;
   closeTab(id: string): void;
   closeTabs(ids: string[], keepId?: string): void;
@@ -830,12 +831,26 @@ export const useApp = create<AppState>((set, get) => ({
         return existing.id;
       }
     }
+    const preview = tab.kind !== 'sql' && tab.preview !== false;
+    const replaced = preview ? s.tabs.find((t) => t.preview && !s.gridDrafts[t.id] && !s.unsavedStructureTabs[t.id]
+      && (s.splitPane?.tabIds.includes(t.id) ?? false) === (s.focusedPane === 'split' && !!s.splitPane)) : undefined;
     const id = tab.id ?? uid();
-    const splitPane = s.splitPane ? s.focusedPane === 'split'
-      ? { ...s.splitPane, tabIds: [...s.splitPane.tabIds, id], tabId: id }
-      : { ...s.splitPane, mainTabId: id } : null;
-    set({ tabs: [...s.tabs, { ...tab, id } as Tab], splitPane, activeTabId: id, activeProfileId: tab.profileId, screen: 'workspace' });
+    const newTab = { ...tab, id, preview } as Tab;
+    const tabs = replaced ? s.tabs.map((t) => t.id === replaced.id ? newTab : t) : [...s.tabs, newTab];
+    const pane = s.splitPane && replaced ? {
+      ...s.splitPane,
+      tabIds: s.splitPane.tabIds.map((tabId) => tabId === replaced.id ? id : tabId),
+    } : s.splitPane;
+    const splitPane = pane ? s.focusedPane === 'split'
+      ? { ...pane, tabIds: pane.tabIds.includes(id) ? pane.tabIds : [...pane.tabIds, id], tabId: id }
+      : { ...pane, mainTabId: id } : null;
+    set({ tabs, splitPane, tabGroups: replaced ? withoutTabs(s.tabGroups, [replaced.id]) : s.tabGroups,
+      activeTabId: id, activeProfileId: tab.profileId, screen: 'workspace' });
     return id;
+  },
+
+  keepTab(id) {
+    set((s) => ({ tabs: s.tabs.map((tab) => tab.id === id && tab.preview ? { ...tab, preview: false } : tab) }));
   },
 
   setTableView(id, view) {
@@ -886,7 +901,7 @@ export const useApp = create<AppState>((set, get) => ({
   renameTab(id, title) {
     const customTitle = title.trim();
     if (!customTitle) return;
-    set((s) => ({ tabs: s.tabs.map((tab) => tab.id === id ? { ...tab, customTitle } : tab) }));
+    set((s) => ({ tabs: s.tabs.map((tab) => tab.id === id ? { ...tab, customTitle, preview: false } : tab) }));
   },
 
   async refreshTab(id, preserveDrafts = false) {
@@ -967,7 +982,7 @@ export const useApp = create<AppState>((set, get) => ({
       const gridDrafts = { ...s.gridDrafts };
       if (draft) gridDrafts[id] = draft;
       else delete gridDrafts[id];
-      return { gridDrafts };
+      return { gridDrafts, tabs: draft ? s.tabs.map((tab) => tab.id === id ? { ...tab, preview: false } : tab) : s.tabs };
     });
   },
 

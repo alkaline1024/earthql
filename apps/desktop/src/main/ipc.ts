@@ -16,7 +16,7 @@ import { exportConnections, importConnections } from './connection-transfer';
 import { readTableGroupFile, saveTableGroupFile } from './table-group-files';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
 import { isNewerVersion } from './update-release';
-import { readLastLaunchVersion, recordLaunchVersion, clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
+import { readLaunchState, recordLaunchVersion, clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
 
 function isErrorInfo(e: any): e is ErrorInfo {
   return e && typeof e === 'object' && typeof e.category === 'string' && typeof e.message === 'string' && !(e instanceof Error);
@@ -66,12 +66,23 @@ export function registerIpc(sessions: SessionManager): void {
   handle('profiles:postUpdateKeychain', null, () => {
     if (!app.isPackaged || process.platform !== 'darwin') return [];
     const current = app.getVersion();
-    const previous = readLastLaunchVersion();
-    if (previous === current) return [];
-    recordLaunchVersion(current);
-    if (!previous || !isNewerVersion(current, previous)) return [];
+    const previous = readLaunchState();
+    const updatePrefix = '--earthql-updated-from=';
+    const installedFrom = process.argv.find((arg) => arg.startsWith(updatePrefix))?.slice(updatePrefix.length);
+    const older = (version: string | undefined) => {
+      try { return !!version && isNewerVersion(current, version); }
+      catch { return false; }
+    };
     const profiles = loadProfiles();
-    return profiles.length > 3 ? profiles.map(({ id }) => id) : [];
+    const pending = profiles.length > 3 && (
+      previous.version === current ? previous.keychainPending : older(installedFrom) || older(previous.version)
+    );
+    if (previous.version !== current || previous.keychainPending !== pending) recordLaunchVersion(current, pending);
+    return pending ? profiles.map(({ id }) => id) : [];
+  });
+  handle('profiles:dismissPostUpdateKeychain', null, () => {
+    if (!app.isPackaged || process.platform !== 'darwin') return;
+    recordLaunchVersion(app.getVersion(), false);
   });
   handle('profiles:authorizeKeychain', null, (id: string) => {
     if (!app.isPackaged || process.platform !== 'darwin') return;

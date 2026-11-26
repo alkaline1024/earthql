@@ -140,6 +140,7 @@ export function DataGrid({
   isNewRow,
   isDeletedRow,
   focusCell,
+  onFocusedColumnChange,
 }: {
   columns: ResultColumn[];
   rows: Cell[][];
@@ -158,6 +159,7 @@ export function DataGrid({
   cellLinks?(row: number, column: number): { label: string; open(): void }[];
   isNewRow?(row: number): boolean;
   isDeletedRow?(row: number): boolean;
+  onFocusedColumnChange?(column: string | null): void;
   focusCell?: { row: number; column: number; version: number };
 }) {
   const sc = useShortcuts();
@@ -184,6 +186,12 @@ export function DataGrid({
     setEditor(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [colKey]);
+
+  const focusedColumn = sel && sel.r < rows.length ? columns[sel.c]?.name ?? null : null;
+  useEffect(() => {
+    onFocusedColumnChange?.(focusedColumn);
+    return () => onFocusedColumnChange?.(null);
+  }, [focusedColumn, onFocusedColumnChange]);
 
   function beginSelect(r: number, c: number, extend: boolean) {
     if (!extend || !anchor) setAnchor({ r, c });
@@ -266,6 +274,31 @@ export function DataGrid({
   function finishEdit() {
     setEditor(null);
     wrap.current?.focus();
+  }
+
+  function onTabKeyDown(event: ReactKeyboardEvent) {
+    if (event.key !== 'Tab' || event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey) return;
+    const current = editor ?? sel;
+    if (!current || !rows.length || !columns.length) return;
+    // Own tab navigation before editor controls can consume it or receive focus.
+    event.preventDefault();
+    event.stopPropagation();
+    const index = Math.max(0, Math.min(rows.length * columns.length - 1,
+      current.r * columns.length + current.c + (event.shiftKey ? -1 : 1)));
+    const next = { r: Math.floor(index / columns.length), c: index % columns.length };
+    setAnchor(next);
+    setSel(next);
+    if (expandRows) wrap.current?.querySelector(`[data-grid-row="${next.r}"]`)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    else v.scrollToIndex(next.r);
+    const viewport = wrap.current;
+    if (viewport) {
+      const left = rowNumW + widths.slice(0, next.c).reduce((sum, width) => sum + width, 0);
+      const right = left + widths[next.c];
+      if (left < viewport.scrollLeft) viewport.scrollLeft = left;
+      else if (right > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = right - viewport.clientWidth;
+    }
+    if (editor && editing?.canEdit(next.r, next.c)) openCell(next.r, next.c);
+    else finishEdit();
   }
 
   // ---------------------------------------------------------------------------
@@ -598,7 +631,7 @@ export function DataGrid({
 
   return (
     <>
-      <div className={expandRows ? "grid-wrap expand-rows" : "grid-wrap"} ref={wrap} tabIndex={0} onKeyDown={onKeyDown}
+      <div className={expandRows ? "grid-wrap expand-rows" : "grid-wrap"} ref={wrap} tabIndex={0} onKeyDown={onKeyDown} onKeyDownCapture={onTabKeyDown}
         onPaste={(event) => {
           if (editor || (event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable="true"]')) ||
             (!editing && !tableActions?.onPasteRows)) return;

@@ -110,26 +110,29 @@ export async function submitFeedback(draft: FeedbackDraft): Promise<{ id: string
     },
   });
 
-  let response: Response;
-  const signal = AbortSignal.timeout(20_000);
-  try {
-    response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, redirect: 'manual', signal });
-    // Apps Script serves ContentService responses via a separate one-time URL. Fetch it without the key or report.
-    if (response.status === 302 || response.status === 303) {
-      const location = new URL(response.headers.get('location') ?? '', url);
-      if (location.origin !== 'https://script.googleusercontent.com' || location.username || location.password) {
-        throw new Error('Unexpected Apps Script redirect');
-      }
-      response = await fetch(location, { redirect: 'error', signal });
-    }
-  } catch {
-    throw new Error('EarthQL could not confirm delivery. Check the network and /exec URL, then try again.');
-  }
-
-  const result = await response.json().catch(() => null) as { ok?: unknown; id?: unknown; code?: unknown } | null;
-  if (!response.ok || !result) throw new Error('The feedback endpoint did not return a usable response. Check the Web App deployment.');
+  let result;
+  try { result = await postToAppsScript(url, body, AbortSignal.timeout(20_000)); }
+  catch { throw new Error('EarthQL could not confirm delivery. Check the network and /exec URL, then try again.'); }
+  if (!result) throw new Error('The feedback endpoint did not return a usable response. Check the Web App deployment.');
   if (result.ok === true && result.id === draft.id) return { id: draft.id };
   if (bundled && result.code === 'UNAUTHORIZED') throw new Error('This feedback inbox is not accepting public submissions.');
   const message = typeof result.code === 'string' && Object.hasOwn(errorMessages, result.code) ? errorMessages[result.code] : undefined;
   throw new Error(message ?? 'EarthQL could not confirm the report. Try sending again.');
+}
+
+export function bundledFeedbackEndpoint(): string {
+  return bundledEndpoint;
+}
+
+export async function postToAppsScript(url: string, body: string, signal: AbortSignal) {
+  let response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body, redirect: 'manual', signal });
+  // Apps Script serves ContentService responses at a one-time URL. Fetch it without resending the payload.
+  if (response.status === 302 || response.status === 303) {
+    const location = new URL(response.headers.get('location') ?? '', url);
+    if (location.origin !== 'https://script.googleusercontent.com' || location.username || location.password) {
+      throw new Error('Unexpected Apps Script redirect');
+    }
+    response = await fetch(location, { redirect: 'error', signal });
+  }
+  return response.ok ? await response.json().catch(() => null) as { ok?: unknown; id?: unknown; code?: unknown } | null : null;
 }

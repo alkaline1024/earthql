@@ -18,6 +18,7 @@ import { NotificationsButton } from './NotificationsButton';
 import { UpdateButton } from './UpdateButton';
 import { Modal } from './common';
 import { Keys, useShortcuts } from './Shortcut';
+import { effectiveAccelerator, matchesAccelerator } from '../../../shared/keybindings';
 
 function GearIcon() {
   return (
@@ -33,11 +34,20 @@ function GearIcon() {
 function renderTabContent(t: Tab, active: boolean) {
   return (
     <ErrorBoundary label="this tab">
+      <div style={{ display: 'contents' }}
+        onPointerDownCapture={(event) => {
+          if (!(event.target instanceof Element && event.target.closest('.grid-wrap'))) useApp.getState().keepTab(t.id);
+        }}
+        onKeyDownCapture={(event) => {
+          if (!(event.target instanceof Element && event.target.closest('.grid-wrap'))) useApp.getState().keepTab(t.id);
+        }}
+        onChangeCapture={() => useApp.getState().keepTab(t.id)}>
       {t.kind === 'table' && (
         <TableTab tabId={t.id} profileId={t.profileId} object={t.object} objectKind={t.objectKind} initialView={t.initialView} initialFilters={t.initialFilters} active={active} refreshVersion={t.refreshVersion} />
       )}
       {t.kind === 'sql' && <SqlTab key={t.profileId} tabId={t.id} profileId={t.profileId} initialSql={t.initialSql} context={t.context} active={active} refreshVersion={t.refreshVersion} />}
       {t.kind === 'create' && <CreateTableTab tabId={t.id} profileId={t.profileId} container={t.container} refreshVersion={t.refreshVersion} />}
+      </div>
     </ErrorBoundary>
   );
 }
@@ -156,6 +166,22 @@ export function App() {
     void loadProfiles();
   }, [loadProfiles]);
 
+  // The renderer also handles this command when the native menu has not been
+  // rebuilt yet (for example after a renderer hot reload during development).
+  useEffect(() => {
+    if (settingsOpen || feedback || discardPrompt) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || !matchesAccelerator(event, effectiveAccelerator('close-other-tabs', sc.overrides))) return;
+      const state = useApp.getState();
+      if (state.screen !== 'workspace' || !state.activeTabId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (!event.repeat) state.closeTabs(state.tabs.filter(({ id }) => id !== state.activeTabId).map(({ id }) => id), state.activeTabId);
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [sc.overrides, settingsOpen, feedback, discardPrompt]);
+
   useEffect(
     () =>
       onMenuCommand((cmd) => {
@@ -174,6 +200,7 @@ export function App() {
         if (cmd === 'send-feedback') openFeedback();
         if (cmd === 'open-settings') setSettingsOpen(true);
         const s = useApp.getState();
+        if (cmd === 'save' && s.screen === 'workspace' && s.activeTabId) s.keepTab(s.activeTabId);
         if (cmd === 'new-connection') {
           s.setScreen('connections');
           useApp.setState({ editProfileId: undefined });
@@ -185,6 +212,9 @@ export function App() {
             if (Object.keys(s.connections).length > 0) s.setScreen('workspace');
           } else if (s.activeTabId) s.closeTab(s.activeTabId);
           else if (!s.tabs.length) s.setScreen('connections');
+        }
+        if (cmd === 'close-other-tabs' && s.screen === 'workspace' && s.activeTabId) {
+          s.closeTabs(s.tabs.filter(({ id }) => id !== s.activeTabId).map(({ id }) => id), s.activeTabId);
         }
         if (cmd === 'close-all-tabs' && s.screen === 'workspace') s.closeTabs(s.tabs.map(({ id }) => id));
         if (cmd === 'reopen-closed-tab' && s.screen === 'workspace') s.reopenClosedTab();

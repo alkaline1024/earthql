@@ -2,10 +2,11 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 // Only these channels are reachable from the renderer.
 const INVOKE = new Set([
+  'activity:settings', 'activity:setEnabled', 'activity:setRandomizeUsername',
   'updates:status', 'updates:install', 'files:reveal',
   'backup:save', 'backup:open', 'backup:restore',
   'keybindings:apply',
-  'profiles:list', 'profiles:postUpdateKeychain', 'profiles:authorizeKeychain', 'profiles:setDefaultDatabase', 'profiles:save', 'profiles:remove', 'profiles:test', 'profiles:databases',
+  'profiles:list', 'profiles:postUpdateKeychain', 'profiles:dismissPostUpdateKeychain', 'profiles:authorizeKeychain', 'profiles:setDefaultDatabase', 'profiles:save', 'profiles:remove', 'profiles:test', 'profiles:databases',
   'profiles:importTablePlus', 'profiles:exportTablePlus',
   'groupFiles:read', 'groupFiles:save',
   'connection:open', 'connection:close',

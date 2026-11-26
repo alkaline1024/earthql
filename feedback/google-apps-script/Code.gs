@@ -1,4 +1,6 @@
 const TAB = 'Feedback';
+const ACTIVITY_TAB = 'Activity Log';
+const ACTIVITY_HEADERS = ['Received UTC', 'Event', 'Session ID', 'EarthQL', 'Installation ID', 'Username', 'macOS Version', 'Model'];
 const HEADERS = ['ID', 'Received UTC', 'Type', 'Title', 'Description', 'Screenshot', 'EarthQL', 'macOS', 'Status'];
 const MAX_IMAGE_BYTES = 1500000;
 const MAX_BODY_LENGTH = Math.ceil(MAX_IMAGE_BYTES / 3) * 4 + 30000;
@@ -34,6 +36,51 @@ function setupFeedback() {
     sheet.setFrozenRows(1);
   }
   requireFeedbackTab(book);
+  if (activityEnabled(config)) ensureActivityTab(book);
+}
+
+// Run from the Apps Script editor to check activity configuration and create its tab.
+function setupActivity() {
+  const config = PropertiesService.getScriptProperties();
+  if (!activityEnabled(config)) {
+    throw new Error('Set ACTIVITY_ENABLED to true in Project Settings → Script properties.');
+  }
+  if (typeof Sheets === 'undefined') throw new Error('Add the Google Sheets API advanced service under Services.');
+  const bookId = googleResourceId(config.getProperty('FEEDBACK_SHEET_ID'), SHEET_LINK);
+  if (!bookId) throw new Error('Set FEEDBACK_SHEET_ID to the ID or URL of the target spreadsheet.');
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) throw new Error('Another request is updating the spreadsheet. Run setupActivity again.');
+  try {
+    const book = SpreadsheetApp.openById(bookId);
+    ensureActivityTab(book);
+    console.log('Activity Log is ready in ' + book.getUrl());
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function activityEnabled(config) {
+  return (config.getProperty('ACTIVITY_ENABLED') || '').trim().toLowerCase() === 'true';
+}
+
+function ensureActivityTab(book) {
+  const sheet = book.getSheetByName(ACTIVITY_TAB) || book.insertSheet(ACTIVITY_TAB);
+  if (sheet.getLastRow() === 0) {
+    sheet.getRange(1, 1, 1, ACTIVITY_HEADERS.length).setValues([ACTIVITY_HEADERS]);
+    sheet.setFrozenRows(1);
+    SpreadsheetApp.flush();
+    return;
+  }
+  // Add headers for new fields without changing earlier rows.
+  const extraHeaders = ACTIVITY_HEADERS.slice(4);
+  const range = sheet.getRange(1, 5, 1, extraHeaders.length);
+  const headers = range.getValues()[0];
+  if (headers.includes('')) {
+    headers.forEach((header, index) => {
+      if (!header) sheet.getRange(1, 5 + index).setValue(extraHeaders[index]);
+    });
+    SpreadsheetApp.flush();
+  }
 }
 
 function doPost(event) {
@@ -44,6 +91,7 @@ function doPost(event) {
   if (!input || typeof input !== 'object') return feedbackResponse(false, 'INVALID');
 
   const config = PropertiesService.getScriptProperties();
+  if (input.activity !== undefined) return recordActivity(input.activity, body.length, config);
   const publicEnabled = allowPublicSubmissions(config);
   const publicSubmission = publicEnabled && input.key === undefined;
   if (!publicSubmission) {
@@ -98,6 +146,38 @@ function doPost(event) {
   }
 }
 
+function recordActivity(activity, length, config) {
+  if (!activityEnabled(config)) return feedbackResponse(false, 'UNAUTHORIZED');
+  if (length > 1024 || !activity || typeof activity.sessionId !== 'string' || !ID.test(activity.sessionId) ||
+      (activity.installationId !== undefined && (typeof activity.installationId !== 'string' || !ID.test(activity.installationId))) ||
+      (activity.username !== undefined && (typeof activity.username !== 'string' || activity.username.length > 256 || !activity.username.trim())) ||
+      (activity.macosVersion !== undefined && (typeof activity.macosVersion !== 'string' || !/^\d{1,4}(?:\.\d{1,4}){0,2}$/.test(activity.macosVersion))) ||
+      (activity.model !== undefined && (typeof activity.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9,._ -]{0,63}$/.test(activity.model))) ||
+      (activity.event !== 'open' && activity.event !== 'heartbeat') ||
+      typeof activity.appVersion !== 'string' || !/^\d{1,8}\.\d{1,8}\.\d{1,8}$/.test(activity.appVersion)) {
+    return feedbackResponse(false, 'INVALID');
+  }
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return feedbackResponse(false, 'BUSY');
+  try {
+    const bookId = googleResourceId(config.getProperty('FEEDBACK_SHEET_ID'), SHEET_LINK);
+    if (!bookId || typeof Sheets === 'undefined') return feedbackResponse(false, 'SETUP');
+    const time = new Date().toISOString();
+    if (!reservePublicSubmission(config, time, 'ACTIVITY', 60, 5000)) return feedbackResponse(false, 'RATE_LIMIT');
+    ensureActivityTab(SpreadsheetApp.openById(bookId));
+    Sheets.Spreadsheets.Values.append({
+      values: [[time, activity.event, activity.sessionId, activity.appVersion, activity.installationId ?? '', activity.username ?? '', activity.macosVersion ?? '', activity.model ?? '']],
+    }, bookId, "'" + ACTIVITY_TAB + "'!A:H", {
+      valueInputOption: 'RAW', insertDataOption: 'INSERT_ROWS',
+    });
+    return feedbackResponse(true, activity.sessionId);
+  } catch (_) {
+    return feedbackResponse(false, 'STORAGE');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function googleResourceId(value, pattern) {
   const text = (value || '').trim();
   if (/^[\w-]+$/.test(text)) return text;
@@ -110,19 +190,21 @@ function allowPublicSubmissions(config) {
 }
 
 // Called with the script lock held. Reserve before touching Drive or attempting a Sheet write.
-function reservePublicSubmission(config, isoDate) {
+function reservePublicSubmission(config, isoDate, prefix = 'FEEDBACK_PUBLIC', perMinute = PUBLIC_PER_MINUTE, perDay = PUBLIC_PER_DAY) {
   const countFor = (property, window) => {
     const [name, count] = (config.getProperty(property) || '').split('|');
     return name === window ? Number(count) || 0 : 0;
   };
   const minute = isoDate.slice(0, 16);
   const day = isoDate.slice(0, 10);
-  const minuteCount = countFor('FEEDBACK_PUBLIC_MINUTE', minute);
-  const dayCount = countFor('FEEDBACK_PUBLIC_DAY', day);
-  if (minuteCount >= PUBLIC_PER_MINUTE || dayCount >= PUBLIC_PER_DAY) return false;
+  const minuteKey = prefix + '_MINUTE';
+  const dayKey = prefix + '_DAY';
+  const minuteCount = countFor(minuteKey, minute);
+  const dayCount = countFor(dayKey, day);
+  if (minuteCount >= perMinute || dayCount >= perDay) return false;
   config.setProperties({
-    FEEDBACK_PUBLIC_MINUTE: minute + '|' + (minuteCount + 1),
-    FEEDBACK_PUBLIC_DAY: day + '|' + (dayCount + 1),
+    [minuteKey]: minute + '|' + (minuteCount + 1),
+    [dayKey]: day + '|' + (dayCount + 1),
   });
   return true;
 }

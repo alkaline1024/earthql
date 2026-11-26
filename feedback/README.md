@@ -63,3 +63,17 @@ The `/exec` endpoint accepts an HTTPS `POST` with `Content-Type: application/jso
 Success returns `{"ok":true,"id":"…"}`. Reusing a successfully stored `id` returns the same receipt. Failures return `{"ok":false,"code":"…"}` with `INVALID`, `UNAUTHORIZED`, `SETUP`, `BUSY`, `RATE_LIMIT`, or `STORAGE`. Inspect the JSON envelope because Apps Script can return it with HTTP 200. EarthQL keeps the report open on failure so the user can retry with the same ID.
 
 `npm test` includes a local HTTP simulation of the Apps Script receiver with Sheets and Drive stand-ins. Use the two test reports above to verify your own Google deployment.
+
+## App activity
+
+Replace the deployed Apps Script project's `Code.gs` with [the current script](google-apps-script/Code.gs). Save it and set `ACTIVITY_ENABLED` to `true` in **Project Settings → Script properties**. Run `setupActivity` in the editor and open the spreadsheet URL printed in the execution log. **Activity Log** is a tab inside that spreadsheet. If the tab is missing, the deployed receiver also creates it on the first valid activity event.
+
+Update the existing web app deployment to a new version so its `/exec` URL stays the same. The release uses the existing `EARTHQL_FEEDBACK_URL` build variable. If the editor does not list `setupActivity`, check that the updated `Code.gs` has been saved in the deployment's project.
+
+Activity sharing is on by default in installed builds with the feedback endpoint configured. Users can turn it off under **Settings → General → Privacy → Share app activity**. EarthQL sends an `open` event at launch, then a `heartbeat` every hour it remains open. Enabling sharing while the app is open starts a new session immediately. The sheet stores the server's receipt time, event type, a random per-session ID, app version, and a random installation ID kept in the local app profile. Use Installation ID to group activity across launches. The macOS Version and Model columns show the system version and Mac model identifier (such as `Mac14,3`). The Username column contains the computer account username by default. In **Settings → General → Privacy**, turn on **Randomize username** to send a stable label derived from the random installation ID in future events. Turning on randomization leaves earlier rows as recorded. After updating the receiver, older clients can still submit activity and leave fields they do not send blank. Heartbeats indicate the app is open, including when idle. Requests are best-effort and are dropped when offline. The public endpoint applies separate activity rate limits.
+
+To preview the setting with `npm run dev`, set `EARTHQL_DEV_ACTIVITY_PREVIEW=true` in the repository root `.env` and restart the dev app. The preview sends no activity and keeps toggle changes in memory.
+
+To send real activity from `npm run dev`, set `EARTHQL_DEV_ACTIVITY_SEND=true` and `EARTHQL_FEEDBACK_URL` in the root `.env` and restart. The receiver must have `ACTIVITY_ENABLED=true`. Dev toggle changes last until the app restarts.
+
+The dev terminal prints whether the receiver acknowledged each event. An `INVALID` response to a normal activity event can indicate that the `/exec` URL still runs the old Feedback-only code. Saving `Code.gs` and running `setupActivity` in the editor uses the latest editor code. In **Deploy → Manage deployments**, edit the deployment used by `EARTHQL_FEEDBACK_URL`, choose **New version**, then click **Deploy** to publish the updated receiver to that URL.

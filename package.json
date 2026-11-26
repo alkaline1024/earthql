@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "npm run dev -w @earthql/desktop",
     "build": "npm run build -w @earthql/desktop",
+    "version": "node scripts/version-desktop.mjs",
     "dist:mac": "npm run dist:mac -w @earthql/desktop",
     "typecheck": "tsc -p tsconfig.json --noEmit && npm run typecheck -w @earthql/desktop",
     "test": "vitest run && node --test feedback/google-apps-script/receiver.test.cjs",

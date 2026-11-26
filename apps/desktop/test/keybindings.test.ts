@@ -55,6 +55,20 @@ describe('shortcut registry', () => {
   });
 });
 
+describe('requested shortcuts', () => {
+  it('matches add row on the shifted plus key and displays its symbol', () => {
+    const accelerator = effectiveAccelerator('grid-add-row', {});
+    expect(matchesAccelerator(key('Equal', { metaKey: true, shiftKey: true }, '+'), accelerator)).toBe(true);
+    expect(matchesAccelerator(key('Equal', { metaKey: true }, '='), accelerator)).toBe(false);
+    expect(toSymbols(accelerator!)).toBe('⌘⇧+');
+  });
+
+  it('binds close other tabs to command shift O', () => {
+    expect(matchesAccelerator(key('KeyO', { metaKey: true, shiftKey: true }, 'O'), effectiveAccelerator('close-other-tabs', {}))).toBe(true);
+    expect(shortcutDef('close-other-tabs')?.command).toBe('close-other-tabs');
+  });
+});
+
 describe('accelerator formatting', () => {
   it('renders Mac symbols with no separators', () => {
     expect(toSymbols('CmdOrCtrl+Shift+T')).toBe('⌘⇧T');

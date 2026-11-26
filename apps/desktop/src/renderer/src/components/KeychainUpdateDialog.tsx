@@ -26,7 +26,10 @@ export function KeychainUpdateDialog({
   const dismiss = () => {
     if (busy) return;
     if (onPreviewClose) onPreviewClose();
-    else setIds([]);
+    else {
+      setIds([]);
+      void api.profiles.dismissPostUpdateKeychain().catch(() => undefined);
+    }
   };
 
   async function authorizeAll() {
@@ -46,7 +49,7 @@ export function KeychainUpdateDialog({
     }
     setBusy(false);
     if (failures) setFailed(failures);
-    else setIds([]);
+    else dismiss();
   }
 
   return (

@@ -1,5 +1,6 @@
 import { app } from 'electron';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { ConnectionProfile } from '@earthql/core';
 import type { HistoryEntry, SavedQuery } from '../shared/api';
@@ -40,13 +41,13 @@ export function writeFeedbackEndpoint(endpoint: string): void {
   writeJson(feedbackFile(), { endpoint });
 }
 
-export function readLastLaunchVersion(): string {
-  const state = readJson<{ version?: string } | null>(path.join(dir(), 'last-launch.json'), null);
-  return typeof state?.version === 'string' ? state.version : '';
+export function readLaunchState(): { version: string; keychainPending: boolean } {
+  const state = readJson<{ version?: string; keychainPending?: boolean } | null>(path.join(dir(), 'last-launch.json'), null);
+  return { version: typeof state?.version === 'string' ? state.version : '', keychainPending: state?.keychainPending === true };
 }
 
-export function recordLaunchVersion(version: string): void {
-  writeJson(path.join(dir(), 'last-launch.json'), { version });
+export function recordLaunchVersion(version: string, keychainPending: boolean): void {
+  writeJson(path.join(dir(), 'last-launch.json'), { version, keychainPending });
 }
 
 export function loadProfiles(): ConnectionProfile[] {
@@ -90,4 +91,37 @@ export function writeSaved(profileId: string, list: SavedQuery[]): void {
 
 export function deleteProfileData(profileId: string): void {
   for (const f of [historyFile(profileId), savedFile(profileId)]) fs.rmSync(f, { force: true });
+}
+
+export function loadActivitySharing(): boolean {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir(), 'activity-sharing.json'), 'utf8')) === true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
+export function saveActivitySharing(enabled: boolean): void {
+  writeJson(path.join(dir(), 'activity-sharing.json'), enabled);
+}
+
+export function loadOrCreateActivityInstallationId(): string {
+  const file = path.join(dir(), 'activity-installation.json');
+  const saved = readJson<unknown>(file, null);
+  if (typeof saved === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(saved)) return saved;
+  const id = randomUUID();
+  writeJson(file, id);
+  return id;
+}
+
+export function loadActivityRandomizeUsername(): boolean {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(dir(), 'activity-randomize-username.json'), 'utf8')) !== false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+  }
+}
+
+export function saveActivityRandomizeUsername(enabled: boolean): void {
+  writeJson(path.join(dir(), 'activity-randomize-username.json'), enabled);
 }

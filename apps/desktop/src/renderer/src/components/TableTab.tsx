@@ -292,7 +292,8 @@ function DataView({
   const [filters, setFilters] = useState<Filter[]>(initialFilters);
   const [draftFilters, setDraftFilters] = useState<DraftFilter[]>(() => initialFilters.map((f) => ({ ...f, applied: f })));
   const filterPanel = useRef<HTMLDivElement>(null);
-  const [focusFilter, setFocusFilter] = useState(0);
+  const [focusFilter, setFocusFilter] = useState<{ index: number }>();
+  const [focusedColumn, setFocusedColumn] = useState<string | null>(null);
   const [sort, setSort] = useState<Sort | undefined>();
   const savedProfileId = useApp((s) => s.connections[profileId]?.profileId ?? profileId);
   const storageKey = savedFiltersKey(savedProfileId, object);
@@ -612,23 +613,30 @@ function DataView({
     setSort((s) => (s?.column !== column ? { column, dir: 'asc' } : s.dir === 'asc' ? { column, dir: 'desc' } : undefined));
   };
 
-  const addFilter = () => setDraftFilters((current) => [...current, { column: columnNames[0] ?? '', op: '=', value: '' }]);
+  const selectedFilterColumn = focusedColumn && columnNames.includes(focusedColumn) ? focusedColumn : null;
+  const defaultFilterColumn = selectedFilterColumn ?? columnNames[0] ?? '';
+  const addFilter = () => setDraftFilters((current) => [...current, { column: defaultFilterColumn, op: '=', value: '' }]);
   useEffect(() => {
     if (!active) return;
     function openFilter(event: KeyboardEvent) {
       if (event.key.toLowerCase() !== 'f' || !(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.repeat) return;
       if (document.querySelector('[aria-modal="true"]')) return;
       event.preventDefault();
-      setDraftFilters((current) => current.length ? current : [{ column: columnNames[0] ?? '', op: '=', value: '' }]);
-      setFocusFilter((value) => value + 1);
+      const index = selectedFilterColumn
+        ? draftFilters.findIndex((filter) => filter.column === selectedFilterColumn && filter.op !== 'raw')
+        : draftFilters.length ? 0 : -1;
+      if (index < 0) {
+        setDraftFilters((current) => [...current, { column: defaultFilterColumn, op: '=', value: '' }]);
+      }
+      setFocusFilter({ index: index < 0 ? draftFilters.length : index });
     }
     window.addEventListener('keydown', openFilter);
     return () => window.removeEventListener('keydown', openFilter);
-  }, [active, columnNames]);
+  }, [active, defaultFilterColumn, draftFilters, selectedFilterColumn]);
   useEffect(() => {
     if (!focusFilter) return;
-    const firstRow = filterPanel.current?.querySelector('.filter-row');
-    (firstRow?.querySelector<HTMLInputElement>('input:not([type="checkbox"])') ?? firstRow?.querySelector('select'))?.focus();
+    const row = filterPanel.current?.querySelectorAll('.filter-row')[focusFilter.index];
+    (row?.querySelector<HTMLInputElement>('input:not([type="checkbox"])') ?? row?.querySelector('select'))?.focus();
   }, [focusFilter]);
 
   const validValues = (filter: Filter) => {
@@ -912,6 +920,7 @@ function DataView({
             isNewRow={(row) => row >= result.rows.length}
             isDeletedRow={isDeletedRow}
             focusCell={focusCell}
+            onFocusedColumnChange={setFocusedColumn}
             cellLinks={(row, column) => (structure?.constraints ?? []).flatMap((constraint) => {
               const target = constraint.foreignTarget;
               if (!target || !constraint.columns.includes(result.columns[column].name) || target.columns.length !== constraint.columns.length) return [];

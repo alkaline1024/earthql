@@ -360,6 +360,7 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
       <Fragment key={tab.id}>
       {dropTarget?.id === tab.id && !dropTarget.after && dropSlot()}
       <div
+        onDoubleClick={() => useApp.getState().keepTab(tab.id)}
         data-tab-id={tab.id}
         className={`tab no-drag${tab.id === activeTabId ? ' active' : ''}${draggedTabId === tab.id ? ' dragging-source' : ''}`}
         style={{ '--env': profile?.env.color ?? 'transparent', ...(draggedTabId === tab.id ? { width: draggedTabWidth } : {}) } as CSSProperties}
@@ -383,7 +384,7 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
         <ObjectIcon kind={tab.kind === 'sql' ? 'sql' : tab.kind === 'create' ? 'create' : tab.objectKind === 'view' ? 'view' : 'table'} />
         <span className="t-title">
           <span className="t-name-line">
-            <span className="t-name">{title}</span>
+            <span className="t-name" style={tab.preview ? { fontStyle: 'italic' } : undefined}>{title}</span>
             {unsaved && <span className="unsaved-dot" role="img" aria-label="Unsaved changes" title="Unsaved changes" />}
           </span>
           <div className="t-sub">{tab.kind === 'table' ? profile?.name : connectionName(tab.profileId)}{subtitle ? ` · ${subtitle}` : ''}</div>
@@ -535,7 +536,7 @@ export function TabBar({ pane = 'main' }: { pane?: PaneId }) {
               <div className="conn-menu-separator" role="separator" />
               <button type="button" role="menuitem" onClick={() => invoke(() => closeTab(target.id))}><span>Close Tab</span><Kbd id="close-tab" /></button>
               <button type="button" role="menuitem" disabled={tabs.length < 2} onClick={() => invoke(() => closeTabs(tabs.filter((tab) => tab.id !== target.id).map((tab) => tab.id), target.id))}>
-                Close Other Tabs
+                <span>Close Other Tabs</span><Kbd id="close-other-tabs" />
               </button>
               <button type="button" role="menuitem" onClick={() => invoke(() => closeTabs(tabs.map((tab) => tab.id)))}><span>Close All</span><Kbd id="close-all-tabs" /></button>
             </>

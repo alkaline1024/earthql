@@ -17,30 +17,39 @@ const jpeg = Buffer.from([255, 216, 255, 224, 0, 255, 217]).toString('base64');
 
 function fixture(overrides = {}) {
   const rows = [];
+  const activityRows = [];
   const files = new Map();
   const state = { busy: false, failAppend: false, appendOptions: null };
   const properties = { FEEDBACK_KEY: key, FEEDBACK_SHEET_ID: 'sheet', FEEDBACK_FOLDER_ID: 'folder', ...overrides };
   const opened = { sheets: [], folders: [] };
-  const sheet = {
+  const makeSheet = (rows) => ({
     getLastRow: () => rows.length,
     setFrozenRows: () => {},
-    getRange: (start) => ({
-      getValues: () => [rows[0]],
-      setValues: ([row]) => rows.push(row),
+    getRange: (start, column = 1, _height = 1, width = 1) => ({
+      getValues: () => [Array.from({ length: width }, (_, offset) => rows[start - 1]?.[column - 1 + offset] ?? '')],
+      getValue: () => rows[start - 1]?.[column - 1] ?? '',
+      setValue: (value) => { rows[start - 1][column - 1] = value; },
+      setValues: ([row]) => rows.push(Array.from(row)),
       createTextFinder: (id) => ({
         matchEntireCell: () => ({ findNext: () => rows.slice(start - 1).find(row => row[0] === id) }),
       }),
     }),
-  };
+  });
+  const sheet = makeSheet(rows);
+  let activitySheet;
   const context = vm.createContext({
     Date: class extends Date { constructor() { super(fixtureTime); } },
     PropertiesService: { getScriptProperties: () => ({
       getProperty: (name) => properties[name],
       setProperties: (values) => Object.assign(properties, values),
     }) },
-    SpreadsheetApp: { openById: (id) => {
+    SpreadsheetApp: { flush: () => {}, openById: (id) => {
       opened.sheets.push(id);
-      return { getSheetByName: () => sheet };
+      return {
+        getSheetByName: (name) => name === 'Activity Log' ? activitySheet : sheet,
+        insertSheet: () => (activitySheet = makeSheet(activityRows)),
+        getUrl: () => 'https://docs.google.com/spreadsheets/d/' + id,
+      };
     } },
     DriveApp: { getFolderById: (id) => {
       if (id === 'unavailable-folder') throw new Error('Invalid argument: id');
@@ -65,7 +74,7 @@ function fixture(overrides = {}) {
     Sheets: { Spreadsheets: { Values: { append: ({ values: [row] }, _id, _range, options) => {
       state.appendOptions = options;
       if (state.failAppend) throw new Error('Temporary upstream failure');
-      rows.push(row);
+      (_range.includes('Activity Log') ? activityRows : rows).push(row);
     } } } },
     LockService: { getScriptLock: () => ({ tryLock: () => !state.busy, releaseLock: () => {} }) },
     ContentService: { MimeType: { JSON: 'application/json' }, createTextOutput: (body) => ({ setMimeType: () => body }) },
@@ -74,7 +83,8 @@ function fixture(overrides = {}) {
   context.setupFeedback();
 
   return {
-    rows, files, state, properties, opened,
+    rows, activityRows, files, state, properties, opened,
+    setupActivity: () => context.setupActivity(),
     post: (body) => context.doPost({ postData: { contents: body } }),
   };
 }
@@ -171,4 +181,48 @@ test('public limits bound new uploads without blocking an existing receipt', () 
   assert.deepEqual(submit(newReport), { ok: false, code: 'RATE_LIMIT' });
   bundled.properties.FEEDBACK_PUBLIC_MINUTE = '2000-01-01T00:00|10';
   assert.deepEqual(submit(newReport), { ok: true, id: newReport.id });
+});
+
+test('activity is opt-in server-side and writes only allowed fields to a separate tab', () => {
+  const activity = { sessionId: draft.id, event: 'open', appVersion: '0.3.0' };
+  const body = JSON.stringify({ activity: { ...activity, username: 'earthql-test', computerName: 'ignored' } });
+  assert.deepEqual(JSON.parse(fixture().post(body)), { ok: false, code: 'UNAUTHORIZED' });
+  const inbox = fixture({ ACTIVITY_ENABLED: 'true' });
+  assert.deepEqual(Array.from(inbox.activityRows[0]), ['Received UTC', 'Event', 'Session ID', 'EarthQL', 'Installation ID', 'Username', 'macOS Version', 'Model']);
+  assert.deepEqual(JSON.parse(inbox.post(body)), { ok: true, id: draft.id });
+  assert.deepEqual(Array.from(inbox.activityRows[1]), [fixtureTime, 'open', draft.id, '0.3.0', '', 'earthql-test', '', '']);
+  assert.equal(inbox.rows.length, 1);
+  const invalid = JSON.stringify({ activity: { ...activity, appVersion: '=IMPORTXML(...)' } });
+  assert.deepEqual(JSON.parse(inbox.post(invalid)), { ok: false, code: 'INVALID' });
+  inbox.properties.ACTIVITY_MINUTE = fixtureTime.slice(0, 16) + '|60';
+  assert.deepEqual(JSON.parse(inbox.post(body)), { ok: false, code: 'RATE_LIMIT' });
+  assert.deepEqual(JSON.parse(inbox.post(JSON.stringify({ key, report: draft }))), { ok: true, id: draft.id });
+});
+
+test('activity setup reports missing config and first activity creates a missing tab', () => {
+  const inbox = fixture();
+  assert.throws(inbox.setupActivity, /Set ACTIVITY_ENABLED/);
+  assert.equal(inbox.activityRows.length, 0);
+  inbox.properties.ACTIVITY_ENABLED = ' true ';
+  const activity = { sessionId: draft.id, event: 'heartbeat', appVersion: '0.3.0' };
+  assert.deepEqual(JSON.parse(inbox.post(JSON.stringify({ activity }))), { ok: true, id: draft.id });
+  assert.equal(inbox.activityRows.length, 2);
+  inbox.setupActivity();
+  assert.equal(inbox.activityRows.length, 2);
+});
+
+test('activity upgrades the existing tab and accepts only UUID installation IDs', () => {
+  const inbox = fixture({ ACTIVITY_ENABLED: 'true' });
+  inbox.activityRows[0].length = 4;
+  inbox.activityRows.push([fixtureTime, 'open', draft.id, '0.3.0']);
+  const installationId = '8fc06a92-32ba-4bee-84a5-e2d856a037c0';
+  const activity = { sessionId: draft.id, event: 'heartbeat', appVersion: '0.3.0', installationId, macosVersion: '26.1', model: 'Mac14,3' };
+  assert.deepEqual(JSON.parse(inbox.post(JSON.stringify({ activity }))), { ok: true, id: draft.id });
+  assert.equal(inbox.activityRows[0][4], 'Installation ID');
+  assert.equal(inbox.activityRows[0][5], 'Username');
+  assert.equal(inbox.activityRows[1].length, 4);
+  assert.equal(inbox.activityRows[2][4], installationId);
+  assert.deepEqual(Array.from(inbox.activityRows[2]).slice(6), ['26.1', 'Mac14,3']);
+  activity.installationId = 'computer-username';
+  assert.deepEqual(JSON.parse(inbox.post(JSON.stringify({ activity }))), { ok: false, code: 'INVALID' });
 });

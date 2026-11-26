@@ -32,12 +32,18 @@ export default defineConfig(({ mode }) => {
   const endpoint = value ? feedbackEndpointUrl(value) : '';
   if (endpoint === null) throw new Error('EARTHQL_FEEDBACK_URL must be a deployed Google Apps Script /exec URL.');
 
+  const dev = loadEnv(mode, root, 'EARTHQL_DEV_');
+  const activityPreview = mode === 'development' && dev.EARTHQL_DEV_ACTIVITY_PREVIEW?.trim() === 'true';
+  const activitySend = mode === 'development' && dev.EARTHQL_DEV_ACTIVITY_SEND?.trim() === 'true';
+
   const publicKey = loadEnv(mode, root, 'EARTHQL_UPDATE_PUBLIC_KEY').EARTHQL_UPDATE_PUBLIC_KEY?.trim() ?? '';
   if (publicKey) releaseKey(publicKey);
 
   return {
     main: {
       define: {
+        __EARTHQL_DEV_ACTIVITY_PREVIEW__: JSON.stringify(activityPreview),
+        __EARTHQL_DEV_ACTIVITY_SEND__: JSON.stringify(activitySend),
         __EARTHQL_FEEDBACK_URL__: JSON.stringify(endpoint),
         __EARTHQL_UPDATE_PUBLIC_KEY__: JSON.stringify(publicKey),
       },
