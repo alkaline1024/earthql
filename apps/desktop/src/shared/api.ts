@@ -1,3 +1,4 @@
+import type { BackupCategory, BackupPreview, BackupSettings } from './app-backup';
 // IPC contract between the renderer (UI) and the main process.
 // Secrets only travel renderer -> main (when the user types them); main never sends them back.
 import type { SaveTableGroupFileResult } from './table-group-transfer';
@@ -165,6 +166,11 @@ export interface TableImportResult {
 export interface UpdateStatus { available: boolean; busy: boolean; downloadPercent: number | null; }
 
 export interface EarthQLApi {
+  backup: {
+    save(settings: BackupSettings): Promise<string | null>;
+    open(): Promise<BackupPreview | null>;
+    restore(token: string, categories: BackupCategory[]): Promise<number>;
+  };
   updates: {
     status(): Promise<UpdateStatus>;
     install(): Promise<void>;
@@ -179,6 +185,8 @@ export interface EarthQLApi {
   };
   platform: string;
   profiles: {
+    postUpdateKeychain(): Promise<string[]>;
+    authorizeKeychain(id: string): Promise<void>;
     setDefaultDatabase(profileId: string, database: string): Promise<ProfileSummary>;
     list(): Promise<ProfileSummary[]>;
     importTablePlus(password: string): Promise<ConnectionImportResult | null>;

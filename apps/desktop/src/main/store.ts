@@ -40,6 +40,15 @@ export function writeFeedbackEndpoint(endpoint: string): void {
   writeJson(feedbackFile(), { endpoint });
 }
 
+export function readLastLaunchVersion(): string {
+  const state = readJson<{ version?: string } | null>(path.join(dir(), 'last-launch.json'), null);
+  return typeof state?.version === 'string' ? state.version : '';
+}
+
+export function recordLaunchVersion(version: string): void {
+  writeJson(path.join(dir(), 'last-launch.json'), { version });
+}
+
 export function loadProfiles(): ConnectionProfile[] {
   return readJson<{ profiles: ConnectionProfile[] }>(profilesFile(), { profiles: [] }).profiles;
 }
@@ -55,6 +64,10 @@ const savedFile = (profileId: string) => path.join(dir('saved'), `${safeId(profi
 
 export function loadHistory(profileId: string): HistoryEntry[] {
   return readJson<HistoryEntry[]>(historyFile(profileId), []);
+}
+
+export function writeHistory(profileId: string, list: HistoryEntry[]): void {
+  writeJson(historyFile(profileId), [...list].sort((a, b) => b.ranAt - a.ranAt).slice(0, MAX_HISTORY));
 }
 
 export function addHistory(profileId: string, e: HistoryEntry): void {

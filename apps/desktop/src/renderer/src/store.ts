@@ -145,6 +145,7 @@ interface AppState {
   confirmDiscard(): Promise<boolean>;
   resolveDiscard(discard: boolean): void;
 
+  backupVersion: number;
   loadProfiles(): Promise<void>;
   moveProfile(sourceId: string | string[], targetId: string, after: boolean): void;
   connect(profileId: string): Promise<boolean>;
@@ -392,6 +393,45 @@ function disconnected(state: AppState, sessionIds: string[]): Partial<AppState> 
   };
 }
 
+function loadSidebarWidth() {
+  try {
+    const width = Number(localStorage.getItem('earthql.sidebarWidth'));
+    return Number.isFinite(width) && width >= 200 ? Math.min(480, width) : 272;
+  } catch { return 272; }
+}
+
+function loadFavoritesHeight() {
+  try {
+    const height = Number(localStorage.getItem('earthql.favoritesHeight'));
+    return Number.isFinite(height) && height >= 64 ? height : 210;
+  } catch { return 210; }
+}
+
+export async function reloadBackupSettings() {
+  const theme = loadTheme();
+  const autoThemes = loadAutoThemes();
+  const uiStyle = loadUiStyle();
+  const keybindings = loadKeybindings();
+  applyTheme(theme, autoThemes);
+  applyUiStyle(uiStyle);
+  useApp.setState((state) => ({
+    theme, autoThemes, uiStyle, keybindings,
+    sidebarWidth: loadSidebarWidth(),
+    favoritesHeight: loadFavoritesHeight(),
+    bookmarksExpanded: loadBookmarksExpanded(),
+    tableGroups: loadTableGroups(),
+    tableFavorites: loadTableFavorites(),
+    pinnedTables: loadPinnedTables(),
+    sidebarConnectionOrder: loadSidebarConnectionOrder(),
+    sqlRunDefault: loadSqlRunDefault(),
+    defaultRowLimit: loadDefaultRowLimit(),
+    beautifyUppercase: loadBeautifyUppercase(),
+    backupVersion: state.backupVersion + 1,
+  }));
+  const { loadProfiles } = useApp.getState();
+  await Promise.all([loadProfiles(), api.keybindings.apply(keybindings)]);
+}
+
 const initialTheme = loadTheme();
 const initialAutoThemes = loadAutoThemes();
 applyTheme(initialTheme, initialAutoThemes);
@@ -402,24 +442,14 @@ export const useApp = create<AppState>((set, get) => ({
   draggedTabId: null,
   draggedTabWidth: 180,
   setDraggedTabId: (draggedTabId, width) => set({ draggedTabId, ...(width ? { draggedTabWidth: width } : {}) }),
-  sidebarWidth: (() => {
-    try {
-      const width = Number(localStorage.getItem('earthql.sidebarWidth'));
-      return Number.isFinite(width) && width >= 200 ? Math.min(480, width) : 272;
-    } catch { return 272; }
-  })(),
+  sidebarWidth: loadSidebarWidth(),
   setSidebarWidth(width) {
     if (!Number.isFinite(width)) return;
     const sidebarWidth = Math.max(200, Math.min(480, width));
     try { localStorage.setItem('earthql.sidebarWidth', String(sidebarWidth)); } catch { /* Storage may be unavailable. */ }
     set({ sidebarWidth });
   },
-  favoritesHeight: (() => {
-    try {
-      const height = Number(localStorage.getItem('earthql.favoritesHeight'));
-      return Number.isFinite(height) && height >= 64 ? height : 210;
-    } catch { return 210; }
-  })(),
+  favoritesHeight: loadFavoritesHeight(),
   setFavoritesHeight(height) {
     if (!Number.isFinite(height) || height < 64) return;
     try {
@@ -645,6 +675,7 @@ export const useApp = create<AppState>((set, get) => ({
     prompt?.resolve(discard);
   },
 
+  backupVersion: 0,
   async loadProfiles() {
     const profiles = await api.profiles.list();
     let order: string[] = [];

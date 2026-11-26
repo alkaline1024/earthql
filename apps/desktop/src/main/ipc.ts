@@ -1,4 +1,6 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import type { BackupCategory } from '../shared/app-backup';
+import { openAppBackup, restoreAppBackup, saveAppBackup } from './app-backup';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -13,7 +15,8 @@ import { confirmProductionOperation } from './production-guard';
 import { exportConnections, importConnections } from './connection-transfer';
 import { readTableGroupFile, saveTableGroupFile } from './table-group-files';
 import { captureFeedbackScreenshot, feedbackSettings, saveFeedbackSettings, submitFeedback } from './feedback';
-import { clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
+import { isNewerVersion } from './update-release';
+import { readLastLaunchVersion, recordLaunchVersion, clearHistory, deleteProfileData, loadHistory, loadProfiles, loadSaved, saveProfiles, writeSaved } from './store';
 
 function isErrorInfo(e: any): e is ErrorInfo {
   return e && typeof e === 'object' && typeof e.category === 'string' && typeof e.message === 'string' && !(e instanceof Error);
@@ -32,6 +35,20 @@ export function registerIpc(sessions: SessionManager): void {
     });
   };
 
+  let pendingBackup: Awaited<ReturnType<typeof openAppBackup>> = null;
+  handle('backup:save', null, saveAppBackup);
+  handle('backup:open', null, async () => {
+    const opened = await openAppBackup();
+    if (opened) pendingBackup = opened;
+    return opened?.preview ?? null;
+  });
+  handle('backup:restore', null, (token: string, categories: BackupCategory[]) => {
+    if (!pendingBackup || token !== pendingBackup.preview.token) throw new Error('Open the backup file again.');
+    const missingProfiles = restoreAppBackup(pendingBackup.backup, categories);
+    pendingBackup = null;
+    return missingProfiles;
+  });
+
   // --- profiles -------------------------------------------------------------
   const summary = (p: ConnectionProfile): ProfileSummary => ({ profile: p, storedSecrets: null });
   const draftSecrets = (profile: ConnectionProfile, secrets: Secrets): Secrets => {
@@ -39,6 +56,24 @@ export function registerIpc(sessions: SessionManager): void {
     const missing = fields.filter((field) => secrets[field] === undefined);
     return { ...(missing.length ? getSecrets(profile.id, missing) : {}), ...secrets };
   };
+
+  handle('profiles:postUpdateKeychain', null, () => {
+    if (!app.isPackaged || process.platform !== 'darwin') return [];
+    const current = app.getVersion();
+    const previous = readLastLaunchVersion();
+    if (previous === current) return [];
+    recordLaunchVersion(current);
+    if (!previous || !isNewerVersion(current, previous)) return [];
+    const profiles = loadProfiles();
+    return profiles.length > 3 ? profiles.map(({ id }) => id) : [];
+  });
+  handle('profiles:authorizeKeychain', null, (id: string) => {
+    if (!app.isPackaged || process.platform !== 'darwin') return;
+    const profile = loadProfiles().find((candidate) => candidate.id === id);
+    if (!profile) return;
+    // Reading triggers macOS authorization when required. No credentials cross IPC.
+    getSecrets(profile.id, secretFieldsFor(profile));
+  });
 
   handle('profiles:list', null, () => loadProfiles().map(summary));
   handle('profiles:importTablePlus', null, importConnections);

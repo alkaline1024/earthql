@@ -11,6 +11,7 @@ import { TableTab } from './TableTab';
 import { TabBar } from './TabBar';
 import { PanelDropPreview } from './PanelDropPreview';
 import { ErrorBoundary } from './ErrorBoundary';
+import { KeychainUpdateDialog } from './KeychainUpdateDialog';
 import { FeedbackDialog } from './FeedbackDialog';
 import { SettingsDialog } from './SettingsDialog';
 import { NotificationsButton } from './NotificationsButton';
@@ -68,6 +69,7 @@ function MountedTab({ tab, host, visible, active }: { tab: Tab; host: HTMLDivEle
 }
 
 export function App() {
+  const [keychainPreview, setKeychainPreview] = useState(false);
   const sc = useShortcuts();
   useEffect(() => {
     const clearDrag = () => useApp.getState().setDraggedTabId(null);
@@ -284,7 +286,11 @@ export function App() {
           </svg>
           Feedback &amp; Bug Report
         </button>
-        <span className="muted small" title={`EarthQL version ${appVersion}`}>v{appVersion}</span>
+        {import.meta.env.DEV ? (
+          <button className="btn small ghost no-drag muted" title="Preview post-update Keychain dialog" onClick={() => setKeychainPreview(true)}>v{appVersion}</button>
+        ) : (
+          <span className="muted small" title={`EarthQL version ${appVersion}`}>v{appVersion}</span>
+        )}
         <span className="spacer" />
         <UpdateButton />
         <NotificationsButton />
@@ -309,6 +315,8 @@ export function App() {
         </Modal>
       )}
       {feedback && <FeedbackDialog screenshot={feedback.screenshot} onClose={() => { feedbackOpen.current = false; setFeedback(null); }} />}
+      <KeychainUpdateDialog />
+      {import.meta.env.DEV && keychainPreview && <KeychainUpdateDialog previewCount={profiles.length || 4} onPreviewClose={() => setKeychainPreview(false)} />}
       {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
       <span hidden>{profiles.length}</span>
     </div>

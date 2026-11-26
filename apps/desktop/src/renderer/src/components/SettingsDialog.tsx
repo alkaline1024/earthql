@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from 'react';
 import { LIMITS, NO_LIMIT, type Theme, type UiStyle, useApp } from '../store';
 import { Modal } from './common';
+import { BackupSettings } from './BackupSettings';
 import { ShortcutSettings } from './ShortcutSettings';
 
 import { THEME_OPTIONS } from '../themes';
@@ -18,19 +19,25 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const setBeautifyUppercase = useApp((s) => s.setBeautifyUppercase);
   const sqlRunDefault = useApp((s) => s.sqlRunDefault);
   const setSqlRunDefault = useApp((s) => s.setSqlRunDefault);
-  const [tab, setTab] = useState<'general' | 'shortcuts'>('general');
+  const [tab, setTab] = useState<'general' | 'shortcuts' | 'backup'>('general');
+  const [working, setWorking] = useState(false);
 
   return (
-    <Modal title="Settings" onClose={onClose}>
+    <Modal title="Settings" onClose={() => { if (!working) onClose(); }}>
       <div className="segmented settings-tabs" role="tablist" aria-label="Settings sections">
-        <button type="button" role="tab" aria-selected={tab === 'general'} className={tab === 'general' ? 'on' : ''} onClick={() => setTab('general')}>
+        <button type="button" role="tab" disabled={working} aria-selected={tab === 'general'} className={tab === 'general' ? 'on' : ''} onClick={() => setTab('general')}>
           General
         </button>
-        <button type="button" role="tab" aria-selected={tab === 'shortcuts'} className={tab === 'shortcuts' ? 'on' : ''} onClick={() => setTab('shortcuts')}>
+        <button type="button" role="tab" disabled={working} aria-selected={tab === 'shortcuts'} className={tab === 'shortcuts' ? 'on' : ''} onClick={() => setTab('shortcuts')}>
           Shortcuts
         </button>
+        <button type="button" role="tab" disabled={working} aria-selected={tab === 'backup'} className={tab === 'backup' ? 'on' : ''} onClick={() => setTab('backup')}>
+          Backup / Restore
+        </button>
       </div>
-      {tab === 'shortcuts' ? <ShortcutSettings /> : (
+      <div hidden={tab !== 'backup'}><BackupSettings setWorking={setWorking} /></div>
+      {tab === 'shortcuts' && <ShortcutSettings />}
+      {tab === 'general' && (
       <div className="col" style={{ gap: 20 }}>
         <section>
           <h3 className="settings-h">Appearance</h3>

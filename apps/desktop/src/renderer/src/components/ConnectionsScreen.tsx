@@ -122,6 +122,11 @@ export function ConnectionsScreen({ initialNew, initialProfileId }: { initialNew
   const [groups, setGroups] = useState<ConnectionGroup[]>(() => {
     try { return parseConnectionGroups(localStorage.getItem('earthql.connectionGroups')); } catch { return []; }
   });
+  const backupVersion = useApp((s) => s.backupVersion);
+  useEffect(() => {
+    try { setGroups(parseConnectionGroups(localStorage.getItem('earthql.connectionGroups'))); }
+    catch { setGroups([]); }
+  }, [backupVersion]);
   const [groupEditor, setGroupEditor] = useState<{ id?: string; name: string; ids: string[] } | null>(null);
   const [groupError, setGroupError] = useState('');
   const [dragGroup, setDragGroup] = useState<string | null>(null);

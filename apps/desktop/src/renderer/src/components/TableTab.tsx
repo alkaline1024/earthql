@@ -313,6 +313,7 @@ function DataView({
   const lastBrowse = useRef<BrowseRequest | null>(null);
   const [importFormat, setImportFormat] = useState<TableImportFormat | null>(null);
   const [gridEpoch, setGridEpoch] = useState(0);
+  const backupVersion = useApp((s) => s.backupVersion);
   const draft = useApp((s) => s.gridDrafts[tabId]);
   const setDraft = useApp((s) => s.setGridDraft);
   const toast = useApp((s) => s.toast);
@@ -326,7 +327,7 @@ function DataView({
       setSavedFiltersError(true);
       toast('error', `Saved filters could not be loaded: ${errorInfo(error).message}`);
     }
-  }, [storageKey, toast]);
+  }, [storageKey, toast, backupVersion]);
   const driver = profileOf(profileId)?.profile.driver;
   const status = useApp((s) => s.connections[profileId]?.status);
   const editable = useMemo(() => editBlocked || !structure?.gridUpdate || status === 'lost' ? null : gridPrimaryKey(structure), [editBlocked, structure, status]);

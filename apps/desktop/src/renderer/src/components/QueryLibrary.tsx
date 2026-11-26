@@ -44,20 +44,21 @@ export function QueryLibrary({
   const connections = useApp((s) => s.connections);
   const profiles = useApp((s) => s.profiles);
   const toast = useApp((s) => s.toast);
+  const backupVersion = useApp((s) => s.backupVersion);
   const sc = useShortcuts();
 
   const reload = useCallback(() => {
     api.saved.list(profileId).then(setSaved).catch((error) => toast('error', `Queries could not be loaded: ${errorInfo(error).message}`));
   }, [profileId, toast]);
 
-  useEffect(reload, [reload, version, mode]);
+  useEffect(reload, [reload, version, mode, backupVersion]);
   useEffect(() => {
     let active = true;
     setHistory([]);
     api.history.list(historyProfileId).then((entries) => { if (active) setHistory(entries); })
       .catch((error) => { if (active) toast('error', `Query history could not be loaded: ${errorInfo(error).message}`); });
     return () => { active = false; };
-  }, [historyProfileId, historyVersion, version, toast]);
+  }, [historyProfileId, historyVersion, version, toast, backupVersion]);
   useEffect(() => {
     if (!connections[historyProfileId]) setHistoryProfileId(profileId);
   }, [connections, historyProfileId, profileId]);

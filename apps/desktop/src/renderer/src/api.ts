@@ -22,6 +22,11 @@ async function call<T>(channel: string, ...args: unknown[]): Promise<T> {
 
 export const api: EarthQLApi = {
   platform: bridge.platform,
+  backup: {
+    save: (settings) => call('backup:save', settings),
+    open: () => call('backup:open'),
+    restore: (token, categories) => call('backup:restore', token, categories),
+  },
   updates: {
     status: () => call('updates:status'),
     install: () => call('updates:install'),
@@ -35,6 +40,8 @@ export const api: EarthQLApi = {
     save: (text) => call('groupFiles:save', text),
   },
   profiles: {
+    postUpdateKeychain: () => call('profiles:postUpdateKeychain'),
+    authorizeKeychain: (id) => call('profiles:authorizeKeychain', id),
     setDefaultDatabase: (id, database) => call('profiles:setDefaultDatabase', id, database),
     list: () => call('profiles:list'),
     importTablePlus: (password) => call('profiles:importTablePlus', password),
